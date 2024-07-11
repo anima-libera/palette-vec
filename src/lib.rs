@@ -11,7 +11,7 @@ use fxhash::FxHashMap;
 type Key = u32;
 
 // TODO: Better doc!
-pub struct PalVec<E> {
+pub struct PalVec<E: Clone + Eq> {
     /// An array of keys, each being represented with `keys_size` bits exactly,
     /// without padding between keys (so they are probably not byte-aligned).
     /// All the keys contained here are valid `palette` keys, thus not unused (see `unused_keys`).
@@ -45,7 +45,7 @@ struct PaletteEntry<E> {
     element: E,
 }
 
-impl<E> PalVec<E> {
+impl<E: Clone + Eq> PalVec<E> {
     /// Creates an empty `PalVec`.
     ///
     /// Does not allocate now,
@@ -62,9 +62,15 @@ impl<E> PalVec<E> {
         }
     }
 
-    /// Returns the number of elements in the `PalVec` array.
+    /// Returns the number of elements in the `PalVec`'s array.
     pub fn len(&self) -> usize {
         self.key_vec.len() / self.keys_size
+    }
+
+    /// Returns the number of elements in the palette,
+    /// which is the number of *different* elements in the `PalVec`'s array.
+    pub fn palette_len(&self) -> usize {
+        self.palette.len()
     }
 
     /// Returns `true` if the `PalVec` array contains no elements.
@@ -94,7 +100,7 @@ impl<E> PalVec<E> {
     /// The `index` must be `< self.len()`.
     unsafe fn get_key_in_vec_unchecked(&self, index: usize) -> Key {
         let bit_range = Self::key_bit_range(index, self.keys_size.get());
-        debug_assert!(self.key_vec.len() <= bit_range.end);
+        debug_assert!(bit_range.end <= self.key_vec.len());
         self.key_vec[bit_range].load()
     }
 
@@ -105,7 +111,7 @@ impl<E> PalVec<E> {
     /// The `index` must be `< self.len()`.
     unsafe fn set_key_in_vec_unchecked(&mut self, index: usize, key: Key) {
         let bit_range = Self::key_bit_range(index, self.keys_size.get());
-        debug_assert!(self.key_vec.len() < bit_range.end);
+        debug_assert!(bit_range.end <= self.key_vec.len());
         self.key_vec[bit_range].store(key);
     }
 
@@ -115,6 +121,20 @@ impl<E> PalVec<E> {
         let key_bits: &BitSlice<usize, Lsb0> = BitSlice::from_slice(key_bits);
         let key_bits = &key_bits[0..self.keys_size.get()];
         self.key_vec.extend_from_bitslice(key_bits);
+    }
+
+    fn pop_key_in_vec(&mut self) -> Option<Key> {
+        if self.is_empty() {
+            None
+        } else {
+            let last_key = {
+                // SAFETY: `len-1 < len`, and `0 < len` (we are not empty) so `0 <= len-1`.
+                unsafe { self.get_key_in_vec_unchecked(self.len() - 1) }
+            };
+            self.key_vec
+                .truncate(self.key_vec.len() - self.keys_size.get());
+            Some(last_key)
+        }
     }
 
     /// Reserves capacity for at least `additional` more elements
@@ -276,15 +296,11 @@ impl<E> PalVec<E> {
     /// Only touches the palette and key allocator.
     /// The caller must make sure that indeed `that_many` new instances of the returned key
     /// are indeed added to `key_vec`.
-    fn add_element_instances_to_palette(
-        &mut self,
-        element: impl Into<E> + PartialEq<E>,
-        that_many: usize,
-    ) -> Key {
+    fn add_element_instances_to_palette(&mut self, element: &E, that_many: usize) -> Key {
         let already_in_palette = self
             .palette
             .iter_mut()
-            .find(|(_key, palette_entry)| element == palette_entry.element);
+            .find(|(_key, palette_entry)| element == &palette_entry.element);
         if let Some((&key, entry)) = already_in_palette {
             entry.count += that_many;
             key
@@ -294,7 +310,7 @@ impl<E> PalVec<E> {
                 key,
                 PaletteEntry {
                     count: that_many,
-                    element: element.into(),
+                    element: element.clone(),
                 },
             );
             key
@@ -325,6 +341,10 @@ impl<E> PalVec<E> {
         }
     }
 
+    fn get_element_from_used_key(&self, key: Key) -> Option<&E> {
+        self.palette.get(&key).map(|entry| &entry.element)
+    }
+
     /// Returns a reference to the `PalVec`'s array element at the given `index`.
     ///
     /// Returns `None` if `index` is out of bounds.
@@ -338,11 +358,9 @@ impl<E> PalVec<E> {
             // SAFETY: We checked the bounds, we have `index < self.len()`.
             unsafe { self.get_key_in_vec_unchecked(index) }
         };
-        let element = &self
-            .palette
-            .get(&key)
-            .expect("Bug: Key used in `key_vec` is not used by the palette")
-            .element;
+        let element = self
+            .get_element_from_used_key(key)
+            .expect("Bug: Key used in `key_vec` is not used by the palette");
         Some(element)
     }
 
@@ -353,7 +371,7 @@ impl<E> PalVec<E> {
     /// # Panics
     ///
     /// Panics if `index` is out of bounds.
-    pub fn set(&mut self, index: usize, element: impl Into<E> + PartialEq<E>) {
+    pub fn set(&mut self, index: usize, element: &E) {
         let is_in_bounds = index < self.len();
         if !is_in_bounds {
             // Style of panic message inspired form the one in
@@ -376,13 +394,23 @@ impl<E> PalVec<E> {
         }
     }
 
-    pub fn push(&mut self, element: impl Into<E> + PartialEq<E>) {
-        let key_of_element_to_add = self.add_element_instances_to_palette(element, 1);
-        self.push_key_in_vec(key_of_element_to_add);
+    /// Appends the given `element` to the back of the `PalVec`'s array.
+    pub fn push(&mut self, element: &E) {
+        let key = self.add_element_instances_to_palette(element, 1);
+        self.push_key_in_vec(key);
+    }
+
+    /// Removes the last element from the `PalVec`'s array and returns it,
+    /// or `None` if it is empty.
+    pub fn pop(&mut self) -> Option<&E> {
+        self.pop_key_in_vec().map(|key| {
+            self.get_element_from_used_key(key)
+                .expect("Bug: Key used in `key_vec` is not used by the palette")
+        })
     }
 }
 
-impl<E> Default for PalVec<E> {
+impl<E: Clone + Eq> Default for PalVec<E> {
     fn default() -> Self {
         Self::new()
     }
@@ -484,28 +512,73 @@ mod tests {
     fn push_and_len() {
         let mut palvec: PalVec<()> = PalVec::new();
         assert_eq!(palvec.len(), 0);
-        palvec.push(());
+        palvec.push(&());
         assert_eq!(palvec.len(), 1);
-        palvec.push(());
+        palvec.push(&());
         assert_eq!(palvec.len(), 2);
     }
 
     #[test]
     fn push_and_get() {
         let mut palvec: PalVec<String> = PalVec::new();
-        palvec.push("hello");
+        palvec.push(&"hello".to_string());
         assert_eq!(palvec.get(0), Some(&"hello".to_string()));
     }
 
     #[test]
-    #[should_panic]
     fn get_out_of_bounds_is_none() {
         let mut palvec: PalVec<()> = PalVec::new();
         assert!(palvec.get(0).is_none());
-        palvec.push(());
-        palvec.push(());
+        palvec.push(&());
+        palvec.push(&());
         assert!(palvec.get(0).is_some());
         assert!(palvec.get(1).is_some());
         assert!(palvec.get(2).is_none());
+    }
+
+    #[test]
+    fn pop_empty() {
+        let mut palvec: PalVec<String> = PalVec::new();
+        assert_eq!(palvec.pop(), None);
+    }
+
+    #[test]
+    fn push_and_pop_strings() {
+        let mut palvec: PalVec<String> = PalVec::new();
+        palvec.push(&"uwu".to_string());
+        palvec.push(&"owo".to_string());
+        assert_eq!(palvec.pop(), Some(&"owo".to_string()));
+        assert_eq!(palvec.pop(), Some(&"uwu".to_string()));
+        assert_eq!(palvec.pop(), None);
+    }
+
+    #[test]
+    fn push_and_pop_numbers() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        palvec.push(&8);
+        palvec.push(&5);
+        assert_eq!(palvec.pop(), Some(&5));
+        assert_eq!(palvec.pop(), Some(&8));
+        assert_eq!(palvec.pop(), None);
+    }
+
+    #[test]
+    fn set_and_get() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        palvec.push(&8);
+        palvec.push(&5);
+        palvec.set(0, &0);
+        palvec.set(1, &1);
+        assert_eq!(palvec.get(0), Some(&0));
+        assert_eq!(palvec.get(1), Some(&1));
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_out_of_bounds_panic() {
+        let mut palvec: PalVec<()> = PalVec::new();
+        palvec.push(&());
+        palvec.push(&());
+        palvec.set(2, &());
     }
 }
