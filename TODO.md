@@ -1,0 +1,6 @@
+- While there is only one key used, do not allocate `key_vec`. The length of the array is tracked by the only palette entry.
+- Better optimized palette type. A hashmap for a small number of entries seems like a waste and could be better represented as a vec of (key, entry) pairs.
+- Implement indexing traits.
+- Allow indexing with ranges and return slices (customn view types into a range of the `PalVec`).
+- Maybe require `Eq` for the element type, I don't see how a non `Eq` type would not cause trouble.
+- More tests !!!

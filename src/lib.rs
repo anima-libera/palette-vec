@@ -1,6 +1,11 @@
-use std::{cmp::Ordering, collections::HashMap, num::NonZero, ops::Range};
+use std::{
+    cmp::Ordering,
+    collections::{hash_map::Entry, HashMap},
+    num::NonZero,
+    ops::Range,
+};
 
-use bitvec::{field::BitField, vec::BitVec};
+use bitvec::{field::BitField, order::Lsb0, slice::BitSlice, vec::BitVec, view::BitViewSized};
 use fxhash::FxHashMap;
 
 type Key = u32;
@@ -11,9 +16,10 @@ pub struct PalVec<E> {
     /// without padding between keys (so they are probably not byte-aligned).
     /// All the keys contained here are valid `palette` keys, thus not unused (see `unused_keys`).
     ///
-    /// Should be accessed via [`PalVec::get_key_in_vec`] and [`PalVec::set_key_in_vec`]
+    /// Should be accessed via
+    /// [`PalVec::get_key_in_vec_unchecked`] and [`PalVec::set_key_in_vec_unchecked`]
     /// when seen as an array of keys instead of just an array of bits.
-    key_vec: BitVec,
+    key_vec: BitVec<usize, Lsb0>,
     /// All keys in `key_vec` are represented with exactly this size *in bits*.
     /// Cannot be zero, even if the array or palette or both are empty.
     keys_size: NonZero<usize>,
@@ -21,7 +27,8 @@ pub struct PalVec<E> {
     /// Accessing index `i` of the `PalVec` array will really access `palette[key_vec[i]]`.
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
-    palette: FxHashMap<Key, E>,
+    // TODO: Better optimize the palette type thing!
+    palette: FxHashMap<Key, PaletteEntry<E>>,
     /// Always sorted in reverse (higest first, lowest last) (so that popping its min is O(1)).
     /// All the possible keys above the higest member are also available.
     /// If empty, then it is treated as if it were `vec![0]` (so every possible key is available).
@@ -29,7 +36,13 @@ pub struct PalVec<E> {
     /// This is used to keep track of all the unused keys so that when we want to allocate a new
     /// key to use then we can just get its smallest member, and when we no longer use a key we
     /// can deallocate it and return it to the set it represents.
+    // TODO: Change this into Vec AND max (as a separate field) representing vec content plus max..
     unused_keys: Vec<Key>,
+}
+
+struct PaletteEntry<E> {
+    count: usize,
+    element: E,
 }
 
 impl<E> PalVec<E> {
@@ -64,32 +77,44 @@ impl<E> PalVec<E> {
         (key.checked_ilog2().unwrap_or(0) + 1) as usize
     }
 
-    /// Can the given key be represented in `keys_size` bits?
-    ///
-    /// - If yes, then the given key can be used without changing `keys_size`.
-    /// - If no, then work will have to be done to make `keys_size` large enough to
-    /// be able to fit the given key's representation in that number of bits.
-    fn does_this_key_fit(&self, key: Key) -> bool {
-        let min_size = Self::key_min_size(key);
-        min_size <= self.keys_size.get()
-    }
-
     /// Returns the range of bits in the `keys_size` of a `PalVec`
     /// that has the given `keys_size`.
+    ///
+    /// No bound check, assumes large enough `key_vec`.
     fn key_bit_range(index: usize, keys_size: usize) -> Range<usize> {
         let index_inf = index * keys_size;
         let index_sup_excluded = index_inf + keys_size;
         index_inf..index_sup_excluded
     }
 
-    fn get_key_in_vec(&self, index: usize) -> Key {
+    /// Returns the key at the given index in the array of keys.
+    ///
+    /// # Safety
+    ///
+    /// The `index` must be `< self.len()`.
+    unsafe fn get_key_in_vec_unchecked(&self, index: usize) -> Key {
         let bit_range = Self::key_bit_range(index, self.keys_size.get());
+        debug_assert!(self.key_vec.len() <= bit_range.end);
         self.key_vec[bit_range].load()
     }
 
-    fn set_key_in_vec(&mut self, index: usize, key: Key) {
+    /// Sets the key at the given index to the given key.
+    ///
+    /// # Safety
+    ///
+    /// The `index` must be `< self.len()`.
+    unsafe fn set_key_in_vec_unchecked(&mut self, index: usize, key: Key) {
         let bit_range = Self::key_bit_range(index, self.keys_size.get());
-        self.key_vec[bit_range].store(key)
+        debug_assert!(self.key_vec.len() < bit_range.end);
+        self.key_vec[bit_range].store(key);
+    }
+
+    fn push_key_in_vec(&mut self, key: Key) {
+        let key_le = (key as usize).to_le();
+        let key_bits = key_le.as_raw_slice();
+        let key_bits: &BitSlice<usize, Lsb0> = BitSlice::from_slice(key_bits);
+        let key_bits = &key_bits[0..self.keys_size.get()];
+        self.key_vec.extend_from_bitslice(key_bits);
     }
 
     /// Reserves capacity for at least `additional` more elements
@@ -97,7 +122,7 @@ impl<E> PalVec<E> {
     /// with an effort to allocate the minimum sufficient amount of memory.
     ///
     /// If `keys_size` grows, then this reservation will not suffice anymore.
-    fn reserve_exact_array(&mut self, additional: usize) {
+    fn _reserve_exact_array(&mut self, additional: usize) {
         self.key_vec
             .reserve_exact(additional * self.keys_size.get());
     }
@@ -106,7 +131,7 @@ impl<E> PalVec<E> {
     /// to be inserted in the `PalVec`'s array.
     ///
     /// If `keys_size` grows, then this reservation might not suffice anymore.
-    fn reserve_array(&mut self, additional: usize) {
+    fn _reserve_array(&mut self, additional: usize) {
         self.key_vec.reserve(additional * self.keys_size.get());
     }
 
@@ -147,7 +172,7 @@ impl<E> PalVec<E> {
                     unsafe { NonZero::new_unchecked(new_keys_size) }
                 };
             }
-            Ordering::Greater => unimplemented!("`keys_size` has to decrease"),
+            Ordering::Greater => todo!("`keys_size` has to decrease"),
         }
     }
 
@@ -177,12 +202,13 @@ impl<E> PalVec<E> {
     /// by properly increasing `keys_size` if necessary.
     fn allocate_new_key_and_make_it_fit(&mut self) -> Key {
         let new_key = self.allocate_new_key_that_may_not_fit();
-        if self.does_this_key_fit(new_key) {
+        let min_size = Self::key_min_size(new_key);
+        let does_it_already_fit = min_size <= self.keys_size.get();
+        if does_it_already_fit {
             // It already fits, nothing to do.
         } else {
-            let key_min_size = Self::key_min_size(new_key);
             // Properly making `keys_size` bigger so that the new key fits.
-            self.set_keys_size(key_min_size);
+            self.set_keys_size(min_size);
         }
         new_key
     }
@@ -242,7 +268,118 @@ impl<E> PalVec<E> {
         }
     }
 
-    // TODO: methods to: add an E to palette, remove an E from palette, set and get from PalVec
+    /// Tells the palette that `that_many` new `element` instances
+    /// will be added to the `PalVec`'s array,
+    /// and the palette must update its map and counts and all and returns the key to `element`,
+    /// allocating this key if `element` is new in the palette.
+    ///
+    /// Only touches the palette and key allocator.
+    /// The caller must make sure that indeed `that_many` new instances of the returned key
+    /// are indeed added to `key_vec`.
+    fn add_element_instances_to_palette(
+        &mut self,
+        element: impl Into<E> + PartialEq<E>,
+        that_many: usize,
+    ) -> Key {
+        let already_in_palette = self
+            .palette
+            .iter_mut()
+            .find(|(_key, palette_entry)| element == palette_entry.element);
+        if let Some((&key, entry)) = already_in_palette {
+            entry.count += that_many;
+            key
+        } else {
+            let key = self.allocate_new_key_and_make_it_fit();
+            self.palette.insert(
+                key,
+                PaletteEntry {
+                    count: that_many,
+                    element: element.into(),
+                },
+            );
+            key
+        }
+    }
+
+    /// Tells the palette that `that_many` instances of the element corresponding to the given key
+    /// will be removed from the `PalVec`'s array,
+    /// and it must update its map and counts and all,
+    /// possiby deallocating the key if the element has no more instances.
+    ///
+    /// Only touches the palette and key allocator.
+    /// The caller must make sure that indeed `that_many` instances of the given key
+    /// are indeed removed from `key_vec`.
+    fn remove_element_instances_from_palette(&mut self, key: Key, that_many: usize) {
+        let map_entry = self.palette.entry(key);
+        let Entry::Occupied(mut occupied_entry) = map_entry else {
+            panic!("Bug: Removing element instances by a key that is unused");
+        };
+        let palette_entry = occupied_entry.get_mut();
+        palette_entry.count = palette_entry
+            .count
+            .checked_sub(that_many)
+            .expect("Bug: Removing more element instances from palette than its count");
+        if palette_entry.count == 0 {
+            occupied_entry.remove();
+            self.deallocate_key(key);
+        }
+    }
+
+    /// Returns a reference to the `PalVec`'s array element at the given `index`.
+    ///
+    /// Returns `None` if `index` is out of bounds.
+    pub fn get(&self, index: usize) -> Option<&E> {
+        let is_in_bounds = index < self.len();
+        if !is_in_bounds {
+            return None;
+        }
+
+        let key = {
+            // SAFETY: We checked the bounds, we have `index < self.len()`.
+            unsafe { self.get_key_in_vec_unchecked(index) }
+        };
+        let element = &self
+            .palette
+            .get(&key)
+            .expect("Bug: Key used in `key_vec` is not used by the palette")
+            .element;
+        Some(element)
+    }
+
+    /// Sets the `PalVec`'s array element at the given `index` to the given `element`.
+    ///
+    /// Subsequent calls to `get` with that `index` will return `element`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is out of bounds.
+    pub fn set(&mut self, index: usize, element: impl Into<E> + PartialEq<E>) {
+        let is_in_bounds = index < self.len();
+        if !is_in_bounds {
+            // Style of panic message inspired form the one in
+            // https://doc.rust-lang.org/std/vec/struct.Vec.html#method.swap_remove
+            panic!(
+                "set index (is {index}) should be < len (len is {})",
+                self.len()
+            );
+        }
+
+        let key_of_elemement_to_remove = {
+            // SAFETY: We checked the bounds, we have `index < self.len()`.
+            unsafe { self.get_key_in_vec_unchecked(index) }
+        };
+        self.remove_element_instances_from_palette(key_of_elemement_to_remove, 1);
+        let key_of_element_to_add = self.add_element_instances_to_palette(element, 1);
+        // SAFETY: We checked the bounds, we have `index < self.len()`.
+        unsafe {
+            self.set_key_in_vec_unchecked(index, key_of_element_to_add);
+        }
+    }
+
+    pub fn push(&mut self, element: impl Into<E> + PartialEq<E>) {
+        let key_of_element_to_add = self.add_element_instances_to_palette(element, 1);
+        self.push_key_in_vec(key_of_element_to_add);
+    }
 }
 
 impl<E> Default for PalVec<E> {
@@ -341,5 +478,34 @@ mod tests {
         // without manual calls to `reduce_unused_keys_len_if_possible`
         // (because automatic calls to this function all worked).
         assert!(palvec.unused_keys.len() <= 4);
+    }
+
+    #[test]
+    fn push_and_len() {
+        let mut palvec: PalVec<()> = PalVec::new();
+        assert_eq!(palvec.len(), 0);
+        palvec.push(());
+        assert_eq!(palvec.len(), 1);
+        palvec.push(());
+        assert_eq!(palvec.len(), 2);
+    }
+
+    #[test]
+    fn push_and_get() {
+        let mut palvec: PalVec<String> = PalVec::new();
+        palvec.push("hello");
+        assert_eq!(palvec.get(0), Some(&"hello".to_string()));
+    }
+
+    #[test]
+    #[should_panic]
+    fn get_out_of_bounds_is_none() {
+        let mut palvec: PalVec<()> = PalVec::new();
+        assert!(palvec.get(0).is_none());
+        palvec.push(());
+        palvec.push(());
+        assert!(palvec.get(0).is_some());
+        assert!(palvec.get(1).is_some());
+        assert!(palvec.get(2).is_none());
     }
 }
