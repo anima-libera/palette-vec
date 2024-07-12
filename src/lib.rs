@@ -9,12 +9,18 @@ use key_vec::KeyVec;
 
 type Key = u32;
 
+/// Returns the minimal size (in bits) that any representation of the given key can fit in.
+fn key_min_size(key: Key) -> NonZeroUsize {
+    // SAFETY: The expression has the form `unsigned_term + 1`, so it is at least 1.
+    unsafe { NonZeroUsize::new_unchecked((key.checked_ilog2().unwrap_or(0) + 1) as usize) }
+}
+
 mod key_vec {
     use std::{cmp::Ordering, num::NonZeroUsize, ops::Range};
 
     use bitvec::{field::BitField, order::Lsb0, slice::BitSlice, vec::BitVec, view::BitViewSized};
 
-    use crate::Key;
+    use crate::{key_min_size, Key};
 
     /// An array of keys, each being represented with [`Self::keys_size()`] bits exactly,
     /// without padding between keys (so they are probably not byte-aligned).
@@ -88,23 +94,66 @@ mod key_vec {
         /// # Panics
         ///
         /// Panics if `index` is out of bounds.
+        /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
         pub(crate) fn _set(&mut self, index: usize, key: Key) {
             if index < self.len() {
-                // SAFETY: We just checked the bounds, `index < self.len()`.
-                unsafe {
-                    self.set_unchecked(index, key);
+                if key_min_size(key) <= self.keys_size {
+                    // SAFETY: We just checked the bounds, `index < self.len()`.
+                    unsafe {
+                        self.set_unchecked(index, key);
+                    }
+                } else {
+                    // The key doesn't fit, `keys_size` is too small.
+                    panic!(
+                        "key min size (is {} bits) should be <= keys_size (is {})",
+                        key_min_size(key),
+                        self.keys_size,
+                    );
                 }
             } else {
                 // Style of panic message inspired form the one in
                 // https://doc.rust-lang.org/std/vec/struct.Vec.html#method.swap_remove
+                panic!("set index (is {index}) should be < len (is {})", self.len());
+            }
+        }
+
+        /// Appends the given `key` to the end of the `KeyVec`.
+        ///
+        /// # Panics
+        ///
+        /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
+        pub(crate) fn _push(&mut self, key: Key) {
+            if key_min_size(key) <= self.keys_size {
+                // SAFETY: We are in a `if SAFETY_CONDITION` block.
+                unsafe {
+                    self.push_unchecked(key);
+                }
+            } else {
+                // The key doesn't fit, `keys_size` is too small.
                 panic!(
-                    "set index (is {index}) should be < len (len is {})",
-                    self.len()
+                    "key min size (is {} bits) should be <= keys_size (is {})",
+                    key_min_size(key),
+                    self.keys_size,
                 );
             }
         }
 
-        /// Returns the key at the given index in the array of keys.
+        /// Removes the last key of the `KeyVec` and returns it, or `None` if it is empty.
+        pub(crate) fn pop(&mut self) -> Option<Key> {
+            if self.is_empty() {
+                None
+            } else {
+                let len = self.len();
+                let last_key = {
+                    // SAFETY: `len-1 < len`, and `0 < len` (we are not empty) so `0 <= len-1`.
+                    unsafe { self.get_unchecked(len - 1) }
+                };
+                self.vec.truncate(len - self.keys_size.get());
+                Some(last_key)
+            }
+        }
+
+        /// Returns the key at the given index in the `KeyVec`.
         ///
         /// # Safety
         ///
@@ -119,33 +168,27 @@ mod key_vec {
         ///
         /// # Safety
         ///
-        /// The `index` must be `< self.len()`.
+        /// The `index` must be `< self.len()`, and
+        /// `key_min_size(key)` must be `<= self.keys_size()`.
         pub(crate) unsafe fn set_unchecked(&mut self, index: usize, key: Key) {
+            debug_assert!(key_min_size(key) <= self.keys_size);
             let bit_range = Self::key_bit_range(self.keys_size, index);
             debug_assert!(bit_range.end <= self.vec.len());
             self.vec[bit_range].store(key);
         }
 
-        pub(crate) fn push(&mut self, key: Key) {
+        /// Appends the given `key` to the end of the `KeyVec`.
+        ///
+        /// # Safety
+        ///
+        /// `key_min_size(key)` must be `<= self.keys_size()`.
+        pub(crate) unsafe fn push_unchecked(&mut self, key: Key) {
+            debug_assert!(key_min_size(key) <= self.keys_size);
             let key_le = (key as usize).to_le();
             let key_bits = key_le.as_raw_slice();
             let key_bits: &BitSlice<usize, Lsb0> = BitSlice::from_slice(key_bits);
             let key_bits = &key_bits[0..self.keys_size.get()];
             self.vec.extend_from_bitslice(key_bits);
-        }
-
-        pub(crate) fn pop(&mut self) -> Option<Key> {
-            if self.is_empty() {
-                None
-            } else {
-                let len = self.len();
-                let last_key = {
-                    // SAFETY: `len-1 < len`, and `0 < len` (we are not empty) so `0 <= len-1`.
-                    unsafe { self.get_unchecked(len - 1) }
-                };
-                self.vec.truncate(len - self.keys_size.get());
-                Some(last_key)
-            }
         }
 
         /// Reserves capacity for at least `additional` more keys,
@@ -463,19 +506,13 @@ where
         self.key_vec.is_empty()
     }
 
-    /// Returns the minimal size (in bits) that any representation of the given key can fit in.
-    fn key_min_size(key: Key) -> NonZeroUsize {
-        // SAFETY: The expression has the form `unsigned_term + 1`, so it is at least 1.
-        unsafe { NonZeroUsize::new_unchecked((key.checked_ilog2().unwrap_or(0) + 1) as usize) }
-    }
-
     /// Allocates the smallest unused key value.
     ///
     /// It is quarenteed that it will fit in `keys_size` bits,
     /// by properly increasing `keys_size` if necessary.
     fn allocate_new_key_and_make_it_fit(&mut self) -> Key {
         let new_key = self.key_allocator.allocate();
-        let min_size = Self::key_min_size(new_key);
+        let min_size = key_min_size(new_key);
         let does_it_already_fit = min_size <= self.key_vec.keys_size();
         if does_it_already_fit {
             // It already fits, nothing to do.
@@ -570,10 +607,7 @@ where
         if !is_in_bounds {
             // Style of panic message inspired form the one in
             // https://doc.rust-lang.org/std/vec/struct.Vec.html#method.swap_remove
-            panic!(
-                "set index (is {index}) should be < len (len is {})",
-                self.len()
-            );
+            panic!("set index (is {index}) should be < len (is {})", self.len());
         }
 
         let key_of_elemement_to_remove = {
@@ -591,7 +625,10 @@ where
     /// Appends the given `element` to the back of the `PalVec`'s array.
     pub fn push(&mut self, element: impl ViewToOwned<E>) {
         let key = self.add_element_instances_to_palette(element, 1);
-        self.key_vec.push(key);
+        // SAFETY: The key was allocated in a way that ensures it fits the `KeyVec`'s key size.
+        unsafe {
+            self.key_vec.push_unchecked(key);
+        }
     }
 
     /// Removes the last element from the `PalVec`'s array and returns it,
@@ -679,12 +716,12 @@ mod tests {
     }
 
     #[test]
-    fn key_min_size() {
-        assert_eq!(PalVec::<()>::key_min_size(0).get(), 1);
-        assert_eq!(PalVec::<()>::key_min_size(1).get(), 1);
-        assert_eq!(PalVec::<()>::key_min_size(2).get(), 2);
-        assert_eq!(PalVec::<()>::key_min_size(3).get(), 2);
-        assert_eq!(PalVec::<()>::key_min_size(4).get(), 3);
+    fn key_min_size_values() {
+        assert_eq!(key_min_size(0).get(), 1);
+        assert_eq!(key_min_size(1).get(), 1);
+        assert_eq!(key_min_size(2).get(), 2);
+        assert_eq!(key_min_size(3).get(), 2);
+        assert_eq!(key_min_size(4).get(), 3);
     }
 
     #[test]
