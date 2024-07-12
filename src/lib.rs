@@ -6,6 +6,7 @@ use std::{
 use fxhash::FxHashMap;
 use key_allocator::KeyAllocator;
 use key_vec::KeyVec;
+use view_to_owned::ViewToOwned;
 
 type Key = u32;
 
@@ -448,6 +449,79 @@ mod key_allocator {
     }
 }
 
+mod view_to_owned {
+    /// Trait that can be implemented for both types of a type pair (R, O)
+    /// where R is a reference-like or view-like type
+    /// that refers to the content of the type O, whereas O owns its data.
+    ///
+    /// A method that takes an `impl ViewToOwned<O>` can thus take either
+    /// an owned O or an R.
+    /// The method can always compare the argument's data for equality with other `&O`s
+    /// via [`ViewToOwned::eq`] (a bit specific, this is needed by this crate).
+    /// If the method happens to need to take ownership of the argument as an O,
+    /// it can via [`ViewToOwned::into_owned`] and it will only do work to construct
+    /// an O(wned) version if it was not already owned.
+    ///
+    /// This allows to get the best of both worlds in the ref vs owned argument tradeoff
+    /// and this crate happens to need to be able to do this.
+    pub trait ViewToOwned<T>
+    where
+        T: Eq,
+    {
+        /// Make sure we own the result, doing some work only if needed.
+        fn into_owned(self) -> T;
+
+        /// Compare just like `PartialEq::eq` with `Eq`'s guarentees.
+        fn eq(&self, other: &T) -> bool;
+    }
+
+    impl<T> ViewToOwned<T> for &T
+    where
+        T: Clone + Eq,
+    {
+        fn into_owned(self) -> T {
+            self.clone()
+        }
+
+        fn eq(&self, other: &T) -> bool {
+            self == &other
+        }
+    }
+
+    impl<T> ViewToOwned<T> for T
+    where
+        T: Clone + Eq,
+    {
+        fn into_owned(self) -> T {
+            self
+        }
+
+        fn eq(&self, other: &T) -> bool {
+            self == other
+        }
+    }
+
+    impl ViewToOwned<String> for &str {
+        fn into_owned(self) -> String {
+            self.to_string()
+        }
+
+        fn eq(&self, other: &String) -> bool {
+            self == other
+        }
+    }
+
+    impl ViewToOwned<Box<str>> for &str {
+        fn into_owned(self) -> Box<str> {
+            self.to_string().into_boxed_str()
+        }
+
+        fn eq(&self, other: &Box<str>) -> bool {
+            *self == other.as_ref()
+        }
+    }
+}
+
 // TODO: Better doc!
 pub struct PalVec<E>
 where
@@ -647,60 +721,6 @@ where
 {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub trait ViewToOwned<T>
-where
-    T: Eq,
-{
-    fn into_owned(self) -> T;
-    fn eq(&self, other: &T) -> bool;
-}
-
-impl<T> ViewToOwned<T> for &T
-where
-    T: Clone + Eq,
-{
-    fn into_owned(self) -> T {
-        self.clone()
-    }
-
-    fn eq(&self, other: &T) -> bool {
-        self == &other
-    }
-}
-
-impl<T> ViewToOwned<T> for T
-where
-    T: Clone + Eq,
-{
-    fn into_owned(self) -> T {
-        self
-    }
-
-    fn eq(&self, other: &T) -> bool {
-        self == other
-    }
-}
-
-impl ViewToOwned<String> for &str {
-    fn into_owned(self) -> String {
-        self.to_string()
-    }
-
-    fn eq(&self, other: &String) -> bool {
-        self == other
-    }
-}
-
-impl ViewToOwned<Box<str>> for &str {
-    fn into_owned(self) -> Box<str> {
-        self.to_string().into_boxed_str()
-    }
-
-    fn eq(&self, other: &Box<str>) -> bool {
-        *self == other.as_ref()
     }
 }
 
