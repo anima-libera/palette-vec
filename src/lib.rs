@@ -190,7 +190,10 @@ mod keyvec {
 }
 
 // TODO: Better doc!
-pub struct PalVec<E: Clone + Eq> {
+pub struct PalVec<E>
+where
+    E: Clone + Eq,
+{
     /// Each element in the `PalVec`'s array is represented by a key here,
     /// that maps to the element's value via the palette.
     /// All the keys contained here are valid `palette` keys, thus not unused (see `unused_keys`).
@@ -217,7 +220,10 @@ struct PaletteEntry<E> {
     element: E,
 }
 
-impl<E: Clone + Eq> PalVec<E> {
+impl<E> PalVec<E>
+where
+    E: Clone + Eq,
+{
     /// Creates an empty `PalVec`.
     ///
     /// Does not allocate now,
@@ -352,11 +358,15 @@ impl<E: Clone + Eq> PalVec<E> {
     /// Only touches the palette and key allocator.
     /// The caller must make sure that indeed `that_many` new instances of the returned key
     /// are indeed added to `key_vec`.
-    fn add_element_instances_to_palette(&mut self, element: &E, that_many: usize) -> Key {
+    fn add_element_instances_to_palette(
+        &mut self,
+        element: impl ViewToOwned<E>,
+        that_many: usize,
+    ) -> Key {
         let already_in_palette = self
             .palette
             .iter_mut()
-            .find(|(_key, palette_entry)| element == &palette_entry.element);
+            .find(|(_key, palette_entry)| element.eq(&palette_entry.element));
         if let Some((&key, entry)) = already_in_palette {
             entry.count += that_many;
             key
@@ -366,7 +376,7 @@ impl<E: Clone + Eq> PalVec<E> {
                 key,
                 PaletteEntry {
                     count: that_many,
-                    element: element.clone(),
+                    element: element.into_owned(),
                 },
             );
             key
@@ -419,7 +429,7 @@ impl<E: Clone + Eq> PalVec<E> {
     /// # Panics
     ///
     /// Panics if `index` is out of bounds.
-    pub fn set(&mut self, index: usize, element: &E) {
+    pub fn set(&mut self, index: usize, element: impl ViewToOwned<E>) {
         let is_in_bounds = index < self.len();
         if !is_in_bounds {
             // Style of panic message inspired form the one in
@@ -443,7 +453,7 @@ impl<E: Clone + Eq> PalVec<E> {
     }
 
     /// Appends the given `element` to the back of the `PalVec`'s array.
-    pub fn push(&mut self, element: &E) {
+    pub fn push(&mut self, element: impl ViewToOwned<E>) {
         let key = self.add_element_instances_to_palette(element, 1);
         self.key_vec.push(key);
     }
@@ -458,9 +468,66 @@ impl<E: Clone + Eq> PalVec<E> {
     }
 }
 
-impl<E: Clone + Eq> Default for PalVec<E> {
+impl<E> Default for PalVec<E>
+where
+    E: Clone + Eq,
+{
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub trait ViewToOwned<T>
+where
+    T: Eq,
+{
+    fn into_owned(self) -> T;
+    fn eq(&self, other: &T) -> bool;
+}
+
+impl<T> ViewToOwned<T> for &T
+where
+    T: Clone + Eq,
+{
+    fn into_owned(self) -> T {
+        self.clone()
+    }
+
+    fn eq(&self, other: &T) -> bool {
+        self == &other
+    }
+}
+
+impl<T> ViewToOwned<T> for T
+where
+    T: Clone + Eq,
+{
+    fn into_owned(self) -> T {
+        self
+    }
+
+    fn eq(&self, other: &T) -> bool {
+        self == other
+    }
+}
+
+impl ViewToOwned<String> for &str {
+    fn into_owned(self) -> String {
+        self.to_string()
+    }
+
+    fn eq(&self, other: &String) -> bool {
+        self == other
+    }
+}
+
+impl ViewToOwned<Box<str>> for &str {
+    fn into_owned(self) -> Box<str> {
+        self.to_string().into_boxed_str()
+    }
+
+    fn eq(&self, other: &Box<str>) -> bool {
+        *self == other.as_ref()
     }
 }
 
@@ -561,16 +628,16 @@ mod tests {
     fn push_and_len() {
         let mut palvec: PalVec<()> = PalVec::new();
         assert_eq!(palvec.len(), 0);
-        palvec.push(&());
+        palvec.push(());
         assert_eq!(palvec.len(), 1);
-        palvec.push(&());
+        palvec.push(());
         assert_eq!(palvec.len(), 2);
     }
 
     #[test]
     fn push_and_get() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(&42);
+        palvec.push(42);
         assert_eq!(palvec.get(0), Some(&42));
     }
 
@@ -578,8 +645,8 @@ mod tests {
     fn get_out_of_bounds_is_none() {
         let mut palvec: PalVec<()> = PalVec::new();
         assert!(palvec.get(0).is_none());
-        palvec.push(&());
-        palvec.push(&());
+        palvec.push(());
+        palvec.push(());
         assert!(palvec.get(0).is_some());
         assert!(palvec.get(1).is_some());
         assert!(palvec.get(2).is_none());
@@ -593,20 +660,19 @@ mod tests {
 
     #[test]
     fn push_and_pop_strings() {
-        use std::borrow::Cow;
-        let mut palvec: PalVec<Cow<str>> = PalVec::new();
-        palvec.push(&Cow::Borrowed("uwu"));
-        palvec.push(&"owo".into());
-        assert_eq!(palvec.pop(), Some(&"owo".into()));
-        assert_eq!(palvec.pop(), Some(&Cow::Borrowed("uwu")));
+        let mut palvec: PalVec<String> = PalVec::new();
+        palvec.push("uwu");
+        palvec.push(String::from("owo"));
+        assert_eq!(palvec.pop().map(AsRef::as_ref), Some("uwu"));
+        assert_eq!(palvec.pop().map(AsRef::as_ref), Some("owo"));
         assert_eq!(palvec.pop(), None);
     }
 
     #[test]
     fn push_and_pop_numbers() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(&8);
-        palvec.push(&5);
+        palvec.push(8);
+        palvec.push(5);
         assert_eq!(palvec.pop(), Some(&5));
         assert_eq!(palvec.pop(), Some(&8));
         assert_eq!(palvec.pop(), None);
@@ -615,10 +681,10 @@ mod tests {
     #[test]
     fn set_and_get() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(&8);
-        palvec.push(&5);
-        palvec.set(0, &0);
-        palvec.set(1, &1);
+        palvec.push(8);
+        palvec.push(5);
+        palvec.set(0, 0);
+        palvec.set(1, 1);
         assert_eq!(palvec.get(0), Some(&0));
         assert_eq!(palvec.get(1), Some(&1));
     }
@@ -627,8 +693,8 @@ mod tests {
     #[should_panic]
     fn set_out_of_bounds_panic() {
         let mut palvec: PalVec<()> = PalVec::new();
-        palvec.push(&());
-        palvec.push(&());
-        palvec.set(2, &());
+        palvec.push(());
+        palvec.push(());
+        palvec.set(2, ());
     }
 }
