@@ -874,6 +874,10 @@ where
     /// Only touches the palette and key allocator.
     /// The caller must make sure that indeed `that_many` new instances of the returned key
     /// are indeed added to `key_vec`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
     fn add_element_instances_to_palette(
         &mut self,
         element: impl ViewToOwned<E>,
@@ -884,7 +888,10 @@ where
             .iter_mut()
             .find(|(_key, palette_entry)| element.eq(&palette_entry.element));
         if let Some((&key, entry)) = already_in_palette {
-            entry.count += that_many;
+            entry.count = entry
+                .count
+                .checked_add(that_many)
+                .expect("Palette entry count overflow (max is usize::MAX)");
             key
         } else {
             let key = self.allocate_new_key_and_make_it_fit();
@@ -953,6 +960,8 @@ where
     /// # Panics
     ///
     /// Panics if `index` is out of bounds.
+    ///
+    /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
     pub fn set(&mut self, index: usize, element: impl ViewToOwned<E>) {
         let is_in_bounds = index < self.len();
         if !is_in_bounds {
@@ -981,6 +990,10 @@ where
     }
 
     /// Appends the given `element` to the back of the `PalVec`'s array.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
     pub fn push(&mut self, element: impl ViewToOwned<E>) {
         let key = self.add_element_instances_to_palette(element, 1);
         self.key_vec.push(key);
@@ -989,10 +1002,9 @@ where
     /// Removes the last element from the `PalVec`'s array and returns it,
     /// or `None` if it is empty.
     ///
-    /// If popped element was the last of its instances, then it is removed from the palette
-    /// and returned in a [`BorrowedOrOwned::Owned`].
-    /// Else, it is simply borrowed from the palette
-    /// and returned in a [`BorrowedOrOwned::Borrowed`].
+    /// If the popped element was the last of its instances,
+    /// then it is removed from the palette and returned in a [`BorrowedOrOwned::Owned`].
+    /// Else, it is borrowed from the palette and returned in a [`BorrowedOrOwned::Borrowed`].
     pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, E>> {
         self.key_vec
             .pop()
@@ -1151,6 +1163,13 @@ mod tests {
         assert_eq!(palvec.get(epic_len / 2).map(|s| s.as_str()), Some(funi));
         palvec.push(funi);
         assert_eq!(palvec.len(), epic_len);
+    }
+
+    #[test]
+    #[should_panic]
+    fn entry_count_too_big() {
+        let mut palvec = PalVec::with_len((), Key::MAX);
+        palvec.push(());
     }
 
     #[test]
