@@ -73,6 +73,21 @@ mod key_vec {
             }
         }
 
+        /// Creates a `KeyVec` (with `keys_size` initially set to zero)
+        /// that is filled with `0`s and that has a length of the given `len`.
+        /// This is as cheap as [`Self::new()`], no matter how big is the given `len`.
+        ///
+        /// Does not allocate now,
+        /// allocations are done when keys are added to it or it is told to reserve memory.
+        /// While `keys_size` remains zero, no allocation is performed either.
+        #[inline]
+        pub(crate) fn with_len(len: usize) -> Self {
+            Self {
+                vec_or_len: BitVecOrLen { len },
+                keys_size: 0,
+            }
+        }
+
         /// The size in bits of the representation of each key in the `KeyVec`.
         #[inline]
         pub(crate) fn keys_size(&self) -> usize {
@@ -514,6 +529,17 @@ mod key_allocator {
             }
         }
 
+        /// Creates a `KeyAllocator` that considers the key value `0` as allocated already.
+        ///
+        /// Does not allocate now,
+        /// allocations are done at some point if necessary after at least one key deallocation.
+        pub(crate) fn with_zero_already_allocated() -> Self {
+            Self {
+                sparse_vec: Vec::new(),
+                range_start: 1,
+            }
+        }
+
         /// Allocates the smallest available key value from the `range_start..` range.
         fn allocate_from_range(&mut self) -> Key {
             self.range_start += 1;
@@ -781,6 +807,32 @@ where
         }
     }
 
+    /// Creates a `PalVec` filled with the given `element` and that has length `len`.
+    ///
+    /// Leveraging a memory usage optimization available when there is only one
+    /// element in the palette, this call is cheap no matter how big `len` is.
+    pub fn with_len(element: E, len: usize) -> Self {
+        if len == 0 {
+            Self::new()
+        } else {
+            Self {
+                key_vec: KeyVec::with_len(len),
+                palette: {
+                    let mut palette = HashMap::default();
+                    palette.insert(
+                        0,
+                        PaletteEntry {
+                            count: len,
+                            element,
+                        },
+                    );
+                    palette
+                },
+                key_allocator: KeyAllocator::with_zero_already_allocated(),
+            }
+        }
+    }
+
     /// Returns the number of elements in the `PalVec`'s array.
     pub fn len(&self) -> usize {
         self.key_vec.len()
@@ -855,7 +907,11 @@ where
     /// Only touches the palette and key allocator.
     /// The caller must make sure that indeed `that_many` instances of the given key
     /// are indeed removed from `key_vec`.
-    fn remove_element_instances_from_palette(&mut self, key: Key, that_many: usize) {
+    fn remove_element_instances_from_palette(
+        &mut self,
+        key: Key,
+        that_many: usize,
+    ) -> BorrowedOrOwned<'_, E> {
         let map_entry = self.palette.entry(key);
         let Entry::Occupied(mut occupied_entry) = map_entry else {
             panic!("Bug: Removing element instances by a key that is unused");
@@ -865,9 +921,13 @@ where
             .count
             .checked_sub(that_many)
             .expect("Bug: Removing more element instances from palette than its count");
-        if palette_entry.count == 0 {
-            occupied_entry.remove();
+        let count = palette_entry.count;
+        if count == 0 {
+            let entry_removed = occupied_entry.remove();
             self.key_allocator.deallocate(key);
+            BorrowedOrOwned::Owned(entry_removed.element)
+        } else {
+            BorrowedOrOwned::Borrowed(&occupied_entry.into_mut().element)
         }
     }
 
@@ -902,13 +962,22 @@ where
         }
 
         let key_of_elemement_to_remove = {
-            // SAFETY: We checked the bounds, we have `index < self.len()`.
-            unsafe { self.key_vec.get_unchecked(index) }
+            if self.key_vec.keys_size() == 0 {
+                0
+            } else {
+                // SAFETY: We checked the bounds, we have `index < self.len()`.
+                unsafe { self.key_vec.get_unchecked(index) }
+            }
         };
         self.remove_element_instances_from_palette(key_of_elemement_to_remove, 1);
         let key_of_element_to_add = self.add_element_instances_to_palette(element, 1);
-        // SAFETY: We checked the bounds, we have `index < self.len()`.
-        unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
+        if self.key_vec.keys_size() == 0 {
+            // Nothing to do here, all the keys have the same value of zero.
+            debug_assert_eq!(key_of_element_to_add, 0);
+        } else {
+            // SAFETY: We checked the bounds, we have `index < self.len()`.
+            unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
+        }
     }
 
     /// Appends the given `element` to the back of the `PalVec`'s array.
@@ -919,11 +988,15 @@ where
 
     /// Removes the last element from the `PalVec`'s array and returns it,
     /// or `None` if it is empty.
-    pub fn pop(&mut self) -> Option<&E> {
-        self.key_vec.pop().map(|key| {
-            self.get_element_from_used_key(key)
-                .expect("Bug: Key used in `key_vec` is not used by the palette")
-        })
+    ///
+    /// If popped element was the last of its instances, then it is removed from the palette
+    /// and returned in a [`BorrowedOrOwned::Owned`].
+    /// Else, it is simply borrowed from the palette
+    /// and returned in a [`BorrowedOrOwned::Borrowed`].
+    pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, E>> {
+        self.key_vec
+            .pop()
+            .map(|key| self.remove_element_instances_from_palette(key, 1))
     }
 }
 
@@ -933,6 +1006,37 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub enum BorrowedOrOwned<'a, T> {
+    Borrowed(&'a T),
+    Owned(T),
+}
+
+impl<'a, T> BorrowedOrOwned<'a, T> {
+    /// Get a reference even if `Owned`.
+    #[allow(clippy::should_implement_trait)] // `Option` has its own `as_ref`, it's ok!
+    pub fn as_ref(&'a self) -> &'a T {
+        match self {
+            BorrowedOrOwned::Borrowed(borrowed) => borrowed,
+            BorrowedOrOwned::Owned(owned) => owned,
+        }
+    }
+}
+
+/// Shortens the use of [`BorrowedOrOwned::as_ref`] on `Option<BorrowedOrOwned<T>>`.
+///
+/// `palvec.pop().as_ref().map(BorrowedOrOwned::as_ref)` can be shortened to
+/// `palvec.pop().map_as_ref()`.
+pub trait OptionBorrowedOrOwned<'a, T> {
+    /// Is the same as `self.as_ref().map(BorrowedOrOwned::as_ref)`.
+    fn map_as_ref(&'a self) -> Option<&'a T>;
+}
+
+impl<'a, T> OptionBorrowedOrOwned<'a, T> for Option<BorrowedOrOwned<'a, T>> {
+    fn map_as_ref(&'a self) -> Option<&'a T> {
+        self.as_ref().map(BorrowedOrOwned::as_ref)
     }
 }
 
@@ -987,7 +1091,7 @@ mod tests {
     #[test]
     fn pop_empty() {
         let mut palvec: PalVec<()> = PalVec::new();
-        assert_eq!(palvec.pop(), None);
+        assert_eq!(palvec.pop().map_as_ref(), None);
     }
 
     #[test]
@@ -995,9 +1099,9 @@ mod tests {
         let mut palvec: PalVec<String> = PalVec::new();
         palvec.push("uwu");
         palvec.push(String::from("owo"));
-        assert_eq!(palvec.pop().map(AsRef::as_ref), Some("owo"));
-        assert_eq!(palvec.pop().map(AsRef::as_ref), Some("uwu"));
-        assert_eq!(palvec.pop(), None);
+        assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("owo"));
+        assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("uwu"));
+        assert_eq!(palvec.pop().map_as_ref(), None);
     }
 
     #[test]
@@ -1005,9 +1109,9 @@ mod tests {
         let mut palvec: PalVec<i32> = PalVec::new();
         palvec.push(8);
         palvec.push(5);
-        assert_eq!(palvec.pop(), Some(&5));
-        assert_eq!(palvec.pop(), Some(&8));
-        assert_eq!(palvec.pop(), None);
+        assert_eq!(palvec.pop().map_as_ref(), Some(&5));
+        assert_eq!(palvec.pop().map_as_ref(), Some(&8));
+        assert_eq!(palvec.pop().map_as_ref(), None);
     }
 
     #[test]
@@ -1028,5 +1132,44 @@ mod tests {
         palvec.push(());
         palvec.push(());
         palvec.set(2, ());
+    }
+
+    #[test]
+    fn with_len() {
+        // Vector length of epic proportions,
+        // remains cheap as long as there is only one entry in the palette.
+        let epic_len = Key::MAX;
+        let funi = "nyaa :3 mrrrrp mreow";
+        let mut palvec = PalVec::with_len(String::from(funi), epic_len);
+        assert_eq!(palvec.len(), epic_len);
+        assert_eq!(palvec.get(0).map(|s| s.as_str()), Some(funi));
+        assert_eq!(palvec.get(epic_len - 1).map(|s| s.as_str()), Some(funi));
+        assert_eq!(palvec.get(epic_len / 2).map(|s| s.as_str()), Some(funi));
+        assert_eq!(palvec.pop().map_as_ref().map(|s| s.as_str()), Some(funi));
+        assert_eq!(palvec.len(), epic_len - 1);
+        palvec.set(epic_len / 2, funi);
+        assert_eq!(palvec.get(epic_len / 2).map(|s| s.as_str()), Some(funi));
+        palvec.push(funi);
+        assert_eq!(palvec.len(), epic_len);
+    }
+
+    #[test]
+    fn push_adds_to_palette() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        palvec.push(8);
+        palvec.push(5);
+        assert!(palvec.palette.values().any(|v| v.element == 8));
+        assert!(palvec.palette.values().any(|v| v.element == 5));
+    }
+
+    #[test]
+    fn pop_removes_from_palette() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        palvec.push(8);
+        palvec.push(5);
+        palvec.pop();
+        palvec.pop();
+        assert!(!palvec.palette.values().any(|v| v.element == 8));
+        assert!(!palvec.palette.values().any(|v| v.element == 5));
     }
 }

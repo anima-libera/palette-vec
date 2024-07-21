@@ -1,5 +1,12 @@
-- While there is only one key used, do not allocate `key_vec`. The length of the array is tracked by the only palette entry.
 - Better optimized palette type. A hashmap for a small number of entries seems like a waste and could be better represented as a vec of (key, entry) pairs.
+- Add an (opt-in) type parameter on `PalVec` that enables an other optimization:
+  - a small index->(uncompressed key into a second palette) map that is checked before accessing via the `palette[keyvec[index]]` method.
+  - so access is now `second_palette[small_map[index]].unwarp_or_else(palette[keyvec[index]])`.
+  - the small map is kept small because most accesses will miss so failed searches through it (worst case access) cost will be added to almost all accesses to the PalVec.
+  - when its size reaches the threshold, the second palette entry with the higest number of instances in the small map is moved to the classic palette and its keyvec.
+  - this memory-usage optimization works better when the palette entries that have few instances are in the second palette (because it reduces the pressure of the small map (and the cost of searching through it) while having the same effect on the reduction of the key_size of the classic palette), so work should be done to make sure that it tends to be as such.
+- Add methods to shrink key_vec length size, or key_size (with and without defragmenting key values allocations to map all key used to smaller values when possible).
 - Implement indexing traits.
 - Allow indexing with ranges and return slices (customn view types into a range of the `PalVec`).
+- More Vec-like methods.
 - More tests !!!
