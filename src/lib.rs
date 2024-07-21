@@ -1037,18 +1037,72 @@ impl<'a, T> BorrowedOrOwned<'a, T> {
     }
 }
 
+impl<'a, T: Clone> BorrowedOrOwned<'a, T> {
+    /// Get an owned even if `Borrowed` by cloning if necessary.
+    pub fn cloned(self) -> T {
+        match self {
+            BorrowedOrOwned::Borrowed(borrowed) => borrowed.clone(),
+            BorrowedOrOwned::Owned(owned) => owned,
+        }
+    }
+}
+
+impl<'a, T: Copy> BorrowedOrOwned<'a, T> {
+    /// Get an owned even if `Borrowed` by copying if necessary.
+    pub fn copied(self) -> T {
+        match self {
+            BorrowedOrOwned::Borrowed(borrowed) => *borrowed,
+            BorrowedOrOwned::Owned(owned) => owned,
+        }
+    }
+}
+
 /// Shortens the use of [`BorrowedOrOwned::as_ref`] on `Option<BorrowedOrOwned<T>>`.
 ///
 /// `palvec.pop().as_ref().map(BorrowedOrOwned::as_ref)` can be shortened to
 /// `palvec.pop().map_as_ref()`.
-pub trait OptionBorrowedOrOwned<'a, T> {
+pub trait OptionBorrowedOrOwnedAsRef<'a, T> {
     /// Is the same as `self.as_ref().map(BorrowedOrOwned::as_ref)`.
     fn map_as_ref(&'a self) -> Option<&'a T>;
 }
 
-impl<'a, T> OptionBorrowedOrOwned<'a, T> for Option<BorrowedOrOwned<'a, T>> {
+impl<'a, T> OptionBorrowedOrOwnedAsRef<'a, T> for Option<BorrowedOrOwned<'a, T>> {
     fn map_as_ref(&'a self) -> Option<&'a T> {
         self.as_ref().map(BorrowedOrOwned::as_ref)
+    }
+}
+
+/// Shortens the use of [`BorrowedOrOwned::cloned`] on `Option<BorrowedOrOwned<T>>`.
+///
+/// `palvec.pop().map(BorrowedOrOwned::cloned)` can be shortened to
+/// `palvec.pop().map_cloned()`.
+pub trait OptionBorrowedOrOwnedCloned<'a, T: Clone> {
+    /// Is the same as `self.map(BorrowedOrOwned::cloned)`.
+    ///
+    /// See [`BorrowedOrOwned::cloned`].
+    fn map_cloned(self) -> Option<T>;
+}
+
+impl<'a, T: Clone> OptionBorrowedOrOwnedCloned<'a, T> for Option<BorrowedOrOwned<'a, T>> {
+    fn map_cloned(self) -> Option<T> {
+        self.map(BorrowedOrOwned::cloned)
+    }
+}
+
+/// Shortens the use of [`BorrowedOrOwned::copied`] on `Option<BorrowedOrOwned<T>>`.
+///
+/// `palvec.pop().map(BorrowedOrOwned::copied)` can be shortened to
+/// `palvec.pop().map_copied()`.
+pub trait OptionBorrowedOrOwnedCopied<'a, T: Clone> {
+    /// Is the same as `self.map(BorrowedOrOwned::copied)`.
+    ///
+    /// See [`BorrowedOrOwned::copied`].
+    fn map_copied(self) -> Option<T>;
+}
+
+impl<'a, T: Copy> OptionBorrowedOrOwnedCopied<'a, T> for Option<BorrowedOrOwned<'a, T>> {
+    fn map_copied(self) -> Option<T> {
+        self.map(BorrowedOrOwned::copied)
     }
 }
 
@@ -1121,8 +1175,8 @@ mod tests {
         let mut palvec: PalVec<i32> = PalVec::new();
         palvec.push(8);
         palvec.push(5);
-        assert_eq!(palvec.pop().map_as_ref(), Some(&5));
-        assert_eq!(palvec.pop().map_as_ref(), Some(&8));
+        assert_eq!(palvec.pop().map_copied(), Some(5));
+        assert_eq!(palvec.pop().map_copied(), Some(8));
         assert_eq!(palvec.pop().map_as_ref(), None);
     }
 
