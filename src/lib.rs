@@ -30,7 +30,7 @@ mod key_vec {
     pub(crate) struct KeyVec {
         /// The size in bits of the memory representation of each key in `vec_or_len.vec`.
         ///
-        /// It is always less-than-or-equal-to `usize`'s size in bits.
+        /// It is always less-than-or-equal-to `Key`'s size in bits.
         keys_size: usize,
         vec_or_len: BitVecOrLen,
     }
@@ -320,12 +320,12 @@ mod key_vec {
         ///
         /// # Panics
         ///
-        /// Panics if `new_keys_size` is not `< usize::BITS`.
+        /// Panics if `new_keys_size` is not `<= Key::BITS`.
         pub(crate) fn change_keys_size(&mut self, new_keys_size: usize) {
-            let max_key_size = usize::BITS as usize;
+            let max_key_size = Key::BITS as usize;
             if max_key_size < new_keys_size {
                 panic!(
-                    "new key size (is {} bits) should be <= `usize::BITS` (is {})",
+                    "new key size (is {} bits) should be <= `Key::BITS` (is {})",
                     new_keys_size, max_key_size
                 );
             }
