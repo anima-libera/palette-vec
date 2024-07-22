@@ -7,9 +7,9 @@ use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwne
 use fxhash::FxHashMap;
 
 // TODO: Better doc!
-pub struct PalVec<E>
+pub struct PalVec<T>
 where
-    E: Clone + Eq,
+    T: Clone + Eq,
 {
     /// Each element in the `PalVec`'s array is represented by a key here,
     /// that maps to the element's value via the palette.
@@ -20,21 +20,21 @@ where
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
     // TODO: Better optimize the palette type thing!
-    palette: FxHashMap<Key, PaletteEntry<E>>,
+    palette: FxHashMap<Key, PaletteEntry<T>>,
     /// This is used to keep track of all the unused keys so that when we want to allocate a new
     /// key to use then we can just get its smallest member, and when we no longer use a key we
     /// can deallocate it and return it to the set it represents.
     key_allocator: KeyAllocator,
 }
 
-struct PaletteEntry<E> {
+struct PaletteEntry<T> {
     count: usize,
-    element: E,
+    element: T,
 }
 
-impl<E> PalVec<E>
+impl<T> PalVec<T>
 where
-    E: Clone + Eq,
+    T: Clone + Eq,
 {
     /// Creates an empty `PalVec`.
     ///
@@ -52,7 +52,7 @@ where
     ///
     /// Leveraging a memory usage optimization available when there is only one
     /// element in the palette, this call is cheap no matter how big `len` is.
-    pub fn with_len(element: E, len: usize) -> Self {
+    pub fn with_len(element: T, len: usize) -> Self {
         if len == 0 {
             Self::new()
         } else {
@@ -121,7 +121,7 @@ where
     /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
     fn add_element_instances_to_palette(
         &mut self,
-        element: impl ViewToOwned<E>,
+        element: impl ViewToOwned<T>,
         that_many: usize,
     ) -> Key {
         let already_in_palette = self
@@ -159,7 +159,7 @@ where
         &mut self,
         key: Key,
         that_many: usize,
-    ) -> BorrowedOrOwned<'_, E> {
+    ) -> BorrowedOrOwned<'_, T> {
         let map_entry = self.palette.entry(key);
         let Entry::Occupied(mut occupied_entry) = map_entry else {
             panic!("Bug: Removing element instances by a key that is unused");
@@ -179,14 +179,14 @@ where
         }
     }
 
-    fn get_element_from_used_key(&self, key: Key) -> Option<&E> {
+    fn get_element_from_used_key(&self, key: Key) -> Option<&T> {
         self.palette.get(&key).map(|entry| &entry.element)
     }
 
     /// Returns a reference to the `PalVec`'s array element at the given `index`.
     ///
     /// Returns `None` if `index` is out of bounds.
-    pub fn get(&self, index: usize) -> Option<&E> {
+    pub fn get(&self, index: usize) -> Option<&T> {
         let key = self.key_vec.get(index)?;
         let element = self
             .get_element_from_used_key(key)
@@ -203,7 +203,7 @@ where
     /// Panics if `index` is out of bounds.
     ///
     /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
-    pub fn set(&mut self, index: usize, element: impl ViewToOwned<E>) {
+    pub fn set(&mut self, index: usize, element: impl ViewToOwned<T>) {
         let is_in_bounds = index < self.len();
         if !is_in_bounds {
             // Style of panic message inspired form the one in
@@ -235,7 +235,7 @@ where
     /// # Panics
     ///
     /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
-    pub fn push(&mut self, element: impl ViewToOwned<E>) {
+    pub fn push(&mut self, element: impl ViewToOwned<T>) {
         let key = self.add_element_instances_to_palette(element, 1);
         self.key_vec.push(key);
     }
@@ -246,16 +246,16 @@ where
     /// If the popped element was the last of its instances,
     /// then it is removed from the palette and returned in a [`BorrowedOrOwned::Owned`].
     /// Else, it is borrowed from the palette and returned in a [`BorrowedOrOwned::Borrowed`].
-    pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, E>> {
+    pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, T>> {
         self.key_vec
             .pop()
             .map(|key| self.remove_element_instances_from_palette(key, 1))
     }
 }
 
-impl<E> Default for PalVec<E>
+impl<T> Default for PalVec<T>
 where
-    E: Clone + Eq,
+    T: Clone + Eq,
 {
     fn default() -> Self {
         Self::new()
