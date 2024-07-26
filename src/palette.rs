@@ -61,6 +61,9 @@ where
 
     /// Returns `true` if the palette contains the given element.
     fn contains(&self, element: impl ViewToOwned<T>) -> bool;
+
+    /// Returns an iterator over the keys currently used by the palette.
+    fn used_keys(&self) -> impl Iterator<Item = Key>;
 }
 
 pub(crate) struct PaletteEntry<T> {
@@ -183,6 +186,41 @@ where
         match self {
             Self::Vec(vec) => vec.contains(element),
             Self::Map(map) => map.contains(element),
+        }
+    }
+
+    /// Returns an iterator over the keys currently used by the palette.
+    fn used_keys(&self) -> impl Iterator<Item = Key> {
+        // Returning either one or the other of two different opaque type iterators is impossible.
+        // Or so I thought before actually trying, but it turns out it is as simple as that.
+
+        enum EitherIterator<A, B>
+        where
+            A: Iterator<Item = Key>,
+            B: Iterator<Item = Key>,
+        {
+            A(A),
+            B(B),
+        }
+
+        impl<A, B> Iterator for EitherIterator<A, B>
+        where
+            A: Iterator<Item = Key>,
+            B: Iterator<Item = Key>,
+        {
+            type Item = Key;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                match self {
+                    Self::A(a) => a.next(),
+                    Self::B(b) => b.next(),
+                }
+            }
+        }
+
+        match self {
+            Self::Vec(vec) => EitherIterator::A(vec.used_keys()),
+            Self::Map(map) => EitherIterator::B(map.used_keys()),
         }
     }
 }
@@ -396,6 +434,14 @@ where
                 })
         })
     }
+
+    /// Returns an iterator over the keys currently used by the palette.
+    fn used_keys(&self) -> impl Iterator<Item = Key> {
+        self.vec
+            .iter()
+            .enumerate()
+            .filter_map(|(key, palette_entry)| (0 < palette_entry.count).then_some(key))
+    }
 }
 
 pub struct PaletteMap<T>
@@ -527,5 +573,10 @@ where
         self.map
             .values()
             .any(|palette_entry| element.eq(&palette_entry.element))
+    }
+
+    /// Returns an iterator over the keys currently used by the palette.
+    fn used_keys(&self) -> impl Iterator<Item = Key> {
+        self.map.keys().cloned()
     }
 }
