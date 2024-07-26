@@ -12,7 +12,7 @@ use crate::key::{key_min_size, Key};
 /// without padding between keys (so they are probably not byte-aligned).
 ///
 /// Supports a `keys_size` of zero, which doesn't allocate and only support the key value `0`.
-pub(crate) struct KeyVec {
+pub struct KeyVec {
     /// The size in bits of the memory representation of each key in `vec_or_len.vec`.
     ///
     /// It is always less-than-or-equal-to `Key`'s size in bits.

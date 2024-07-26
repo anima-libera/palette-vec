@@ -16,7 +16,7 @@ use crate::{
 /// this interval is `0..range_start`; the unused keys that are in this interval
 /// are in `sparse_vec` (which is sorted in reverse for a fast pop of its min value).
 /// - an interval where all the key values are unused, `range_start..`.
-pub(crate) struct KeyAllocator {
+pub struct KeyAllocator {
     /// Always sorted in reverse (higest member first, lowest member last).
     sparse_vec: Vec<Key>,
     range_start: Key,

@@ -1,14 +1,16 @@
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
 use crate::key_alloc::KeyAllocator;
 use crate::key_vec::KeyVec;
-use crate::palette::PaletteVecOrMap;
+use crate::palette::{Palette, PaletteVecOrMap};
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
 // TODO: Better doc!
-pub struct PalVec<T>
+pub struct PalVec<T, P = PaletteVecOrMap<T>>
 where
     T: Clone + Eq,
+    P: Palette<T>,
 {
     /// Each element in the `PalVec`'s array is represented by a key here,
     /// that maps to the element's value via the palette.
@@ -18,16 +20,20 @@ where
     /// Accessing index `i` of the `PalVec` array will really access `palette[key_vec[i]]`.
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
-    palette: PaletteVecOrMap<T>,
+    palette: P,
+    /// The palette holds owned `T`s,
+    /// also `T` has to be used in a field.
+    _phantom: PhantomData<T>,
     /// This is used to keep track of all the unused keys so that when we want to allocate a new
     /// key to use then we can just get its smallest member, and when we no longer use a key we
     /// can deallocate it and return it to the set it represents.
     key_allocator: KeyAllocator,
 }
 
-impl<T> PalVec<T>
+impl<T, P> PalVec<T, P>
 where
     T: Clone + Eq,
+    P: Palette<T>,
 {
     /// Creates an empty `PalVec`.
     ///
@@ -36,7 +42,8 @@ where
     pub fn new() -> Self {
         Self {
             key_vec: KeyVec::new(),
-            palette: PaletteVecOrMap::new(),
+            palette: P::new(),
+            _phantom: PhantomData,
             key_allocator: KeyAllocator::new(),
         }
     }
@@ -54,7 +61,8 @@ where
             // so it matches.
             Self {
                 key_vec: KeyVec::with_len(len),
-                palette: PaletteVecOrMap::with_one_entry(element, len),
+                palette: P::with_one_entry(element, len),
+                _phantom: PhantomData,
                 key_allocator: KeyAllocator::with_zero_already_allocated(),
             }
         }
@@ -196,9 +204,10 @@ where
     }
 }
 
-impl<T> Default for PalVec<T>
+impl<T, P> Default for PalVec<T, P>
 where
     T: Clone + Eq,
+    P: Palette<T>,
 {
     fn default() -> Self {
         Self::new()
@@ -310,7 +319,7 @@ mod tests {
         // remains cheap as long as there is only one entry in the palette.
         let epic_len = Key::MAX;
         let funi = "nyaa :3 mrrrrp mreow";
-        let mut palvec = PalVec::with_len(String::from(funi), epic_len);
+        let mut palvec: PalVec<String> = PalVec::with_len(String::from(funi), epic_len);
         assert_eq!(palvec.len(), epic_len);
         assert_eq!(palvec.get(0).map(|s| s.as_str()), Some(funi));
         assert_eq!(palvec.get(epic_len - 1).map(|s| s.as_str()), Some(funi));
@@ -326,7 +335,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn entry_count_too_big() {
-        let mut palvec = PalVec::with_len((), Key::MAX);
+        let mut palvec: PalVec<()> = PalVec::with_len((), Key::MAX);
         palvec.push(());
     }
 
