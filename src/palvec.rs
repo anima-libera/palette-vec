@@ -1,6 +1,8 @@
+use std::num::NonZeroUsize;
+
 use crate::key_alloc::KeyAllocator;
 use crate::key_vec::KeyVec;
-use crate::palette::Palette;
+use crate::palette::PaletteVec;
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
 // TODO: Better doc!
@@ -16,7 +18,7 @@ where
     /// Accessing index `i` of the `PalVec` array will really access `palette[key_vec[i]]`.
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
-    palette: Palette<T>,
+    palette: PaletteVec<T>,
     /// This is used to keep track of all the unused keys so that when we want to allocate a new
     /// key to use then we can just get its smallest member, and when we no longer use a key we
     /// can deallocate it and return it to the set it represents.
@@ -34,7 +36,7 @@ where
     pub fn new() -> Self {
         Self {
             key_vec: KeyVec::new(),
-            palette: Palette::new(),
+            palette: PaletteVec::new(),
             key_allocator: KeyAllocator::new(),
         }
     }
@@ -47,9 +49,12 @@ where
         if len == 0 {
             Self::new()
         } else {
+            // `KeyVec::with_len` is filled with `0`s, and
+            // `Palette::with_one_entry` associates the given entry to the key `0`,
+            // so it matches.
             Self {
                 key_vec: KeyVec::with_len(len),
-                palette: Palette::with_one_entry(element, len),
+                palette: PaletteVec::with_one_entry(element, len),
                 key_allocator: KeyAllocator::with_zero_already_allocated(),
             }
         }
@@ -96,6 +101,8 @@ where
             panic!("set index (is {index}) should be < len (is {})", self.len());
         }
 
+        // TODO: Optimize the case where the new element is the same as the one it replaces, maybe?
+
         // We just replace the element at `index` by the given element.
         //
         // The removed element is removed from the palette before the new element is added to it.
@@ -113,12 +120,18 @@ where
         };
         self.palette.remove_element_instances(
             key_of_elemement_to_remove,
-            1,
+            {
+                // SAFETY: 1 is not 0.
+                unsafe { NonZeroUsize::new_unchecked(1) }
+            },
             &mut self.key_allocator,
         );
         let key_of_element_to_add = self.palette.add_element_instances(
             element,
-            1,
+            {
+                // SAFETY: 1 is not 0.
+                unsafe { NonZeroUsize::new_unchecked(1) }
+            },
             &mut self.key_allocator,
             &mut self.key_vec,
         );
@@ -140,7 +153,10 @@ where
     pub fn push(&mut self, element: impl ViewToOwned<T>) {
         let key = self.palette.add_element_instances(
             element,
-            1,
+            {
+                // SAFETY: 1 is not 0.
+                unsafe { NonZeroUsize::new_unchecked(1) }
+            },
             &mut self.key_allocator,
             &mut self.key_vec,
         );
@@ -155,8 +171,14 @@ where
     /// Else, it is borrowed from the palette and returned in a [`BorrowedOrOwned::Borrowed`].
     pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, T>> {
         self.key_vec.pop().map(|key| {
-            self.palette
-                .remove_element_instances(key, 1, &mut self.key_allocator)
+            self.palette.remove_element_instances(
+                key,
+                {
+                    // SAFETY: 1 is not 0.
+                    unsafe { NonZeroUsize::new_unchecked(1) }
+                },
+                &mut self.key_allocator,
+            )
         })
     }
 
