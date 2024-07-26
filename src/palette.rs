@@ -16,6 +16,150 @@ pub(crate) struct PaletteEntry<T> {
     element: T,
 }
 
+/// Palette that starts as a [`PaletteVec`]
+/// and switches to a [`PaletteMap`] when the number of entries grows past a threshold.
+pub(crate) enum PaletteVecOrMap<T>
+where
+    T: Clone + Eq,
+{
+    Vec(PaletteVec<T>),
+    Map(PaletteMap<T>),
+}
+
+impl<T> PaletteVecOrMap<T>
+where
+    T: Clone + Eq,
+{
+    /// Creates an empty palette.
+    ///
+    /// Does not allocate now,
+    /// allocations are done when keys are added to it or it is told to reserve memory.
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self::Vec(PaletteVec::new())
+    }
+
+    /// Creates a palette that initially contains one entry.
+    #[inline]
+    pub(crate) fn with_one_entry(element: T, count: usize) -> Self {
+        Self::Vec(PaletteVec::with_one_entry(element, count))
+    }
+
+    /// Returns the number of entries in the palette (which is not the total number of instances).
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Vec(vec) => vec.len(),
+            Self::Map(map) => map.len(),
+        }
+    }
+
+    /// Tells the palette that `that_many` new `element` instances
+    /// will be added to the `PalVec`'s array,
+    /// and the palette must update its map and counts and all and returns the key to `element`,
+    /// allocating this key if `element` is new in the palette.
+    ///
+    /// Only touches the palette, the key allocator, and the `key_vec`'s `key_size`.
+    /// The caller must make sure that indeed `that_many` new instances of the returned key
+    /// are indeed added to `key_vec`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
+    pub(crate) fn add_element_instances(
+        &mut self,
+        element: impl ViewToOwned<T>,
+        that_many: NonZeroUsize,
+        key_allocator: &mut KeyAllocator,
+        key_vec: &mut KeyVec,
+    ) -> Key {
+        match self {
+            Self::Vec(vec) => {
+                let key = vec.add_element_instances(element, that_many, key_allocator, key_vec);
+                // If the vec gets too long, we switch to a map.
+                if vec.len() > 16 {
+                    self.use_map_variant();
+                }
+                key
+            }
+            Self::Map(map) => map.add_element_instances(element, that_many, key_allocator, key_vec),
+        }
+    }
+
+    /// Tells the palette that `that_many` instances of the element corresponding to the given key
+    /// will be removed from the `PalVec`'s array,
+    /// and it must update its map and counts and all,
+    /// possiby deallocating the key if the element has no more instances.
+    ///
+    /// Only touches the palette and key allocator.
+    /// The caller must make sure that indeed `that_many` instances of the given key
+    /// are indeed removed from `key_vec`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` is not used by the palette.
+    ///
+    /// Panics if `that_many` is more than the number of instances of the `element`.
+    #[inline]
+    pub(crate) fn remove_element_instances(
+        &mut self,
+        key: Key,
+        that_many: NonZeroUsize,
+        key_allocator: &mut KeyAllocator,
+    ) -> BorrowedOrOwned<'_, T> {
+        match self {
+            Self::Vec(vec) => vec.remove_element_instances(key, that_many, key_allocator),
+            Self::Map(map) => map.remove_element_instances(key, that_many, key_allocator),
+        }
+    }
+
+    /// Returns a reference to the element associated to the given `key`,
+    /// or `None` if the key is unused.
+    #[inline]
+    pub(crate) fn get(&self, key: Key) -> Option<&T> {
+        match self {
+            Self::Vec(vec) => vec.get(key),
+            Self::Map(map) => map.get(key),
+        }
+    }
+
+    /// Returns `true` if the palette contains the given element.
+    ///
+    /// This operation is *O*(*len*).
+    #[inline]
+    pub(crate) fn contains(&self, element: impl ViewToOwned<T>) -> bool {
+        match self {
+            Self::Vec(vec) => vec.contains(element),
+            Self::Map(map) => map.contains(element),
+        }
+    }
+
+    fn use_map_variant(&mut self) {
+        match self {
+            Self::Vec(vec) => {
+                let vec = std::mem::take(&mut vec.vec);
+                let mut palette_map = PaletteMap::new();
+                for (key, palette_entry) in vec.into_iter().enumerate() {
+                    if 0 < palette_entry.count {
+                        palette_map.map.insert(
+                            key,
+                            PaletteEntry {
+                                count: palette_entry.count,
+                                element: {
+                                    // SAFETY: `count` is non-zero so `element` is initialized.
+                                    unsafe { palette_entry.element.assume_init() }
+                                },
+                            },
+                        );
+                    }
+                }
+                *self = Self::Map(palette_map);
+            }
+            Self::Map(_map) => {}
+        }
+    }
+}
+
 pub(crate) struct PaletteVec<T>
 where
     T: Clone + Eq,
@@ -28,10 +172,16 @@ impl<T> PaletteVec<T>
 where
     T: Clone + Eq,
 {
+    /// Creates an empty palette.
+    ///
+    /// Does not allocate now,
+    /// allocations are done when keys are added to it or it is told to reserve memory.
+    #[inline]
     pub(crate) fn new() -> Self {
         Self { vec: vec![] }
     }
 
+    /// Creates a palette that initially contains one entry.
     pub(crate) fn with_one_entry(element: T, count: usize) -> Self {
         Self {
             vec: vec![PaletteEntry {
@@ -41,6 +191,7 @@ where
         }
     }
 
+    /// Returns the number of entries in the palette (which is not the total number of instances).
     pub(crate) fn len(&self) -> usize {
         self.vec
             .iter()
@@ -201,13 +352,19 @@ impl<T> PaletteMap<T>
 where
     T: Clone + Eq,
 {
+    /// Creates an empty palette.
+    ///
+    /// Does not allocate now,
+    /// allocations are done when keys are added to it or it is told to reserve memory.
+    #[inline]
     pub(crate) fn new() -> Self {
         Self {
             map: HashMap::default(),
         }
     }
 
-    pub(crate) fn with_one_entry(element: T, count: usize) -> Self {
+    /// Creates a palette that initially contains one entry.
+    pub(crate) fn _with_one_entry(element: T, count: usize) -> Self {
         Self {
             map: {
                 let mut map = HashMap::default();
@@ -217,6 +374,8 @@ where
         }
     }
 
+    /// Returns the number of entries in the palette (which is not the total number of instances).
+    #[inline]
     pub(crate) fn len(&self) -> usize {
         self.map.len()
     }

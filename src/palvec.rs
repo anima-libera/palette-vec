@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 
 use crate::key_alloc::KeyAllocator;
 use crate::key_vec::KeyVec;
-use crate::palette::PaletteVec;
+use crate::palette::PaletteVecOrMap;
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
 // TODO: Better doc!
@@ -18,7 +18,7 @@ where
     /// Accessing index `i` of the `PalVec` array will really access `palette[key_vec[i]]`.
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
-    palette: PaletteVec<T>,
+    palette: PaletteVecOrMap<T>,
     /// This is used to keep track of all the unused keys so that when we want to allocate a new
     /// key to use then we can just get its smallest member, and when we no longer use a key we
     /// can deallocate it and return it to the set it represents.
@@ -36,7 +36,7 @@ where
     pub fn new() -> Self {
         Self {
             key_vec: KeyVec::new(),
-            palette: PaletteVec::new(),
+            palette: PaletteVecOrMap::new(),
             key_allocator: KeyAllocator::new(),
         }
     }
@@ -54,7 +54,7 @@ where
             // so it matches.
             Self {
                 key_vec: KeyVec::with_len(len),
-                palette: PaletteVec::with_one_entry(element, len),
+                palette: PaletteVecOrMap::with_one_entry(element, len),
                 key_allocator: KeyAllocator::with_zero_already_allocated(),
             }
         }
@@ -348,5 +348,35 @@ mod tests {
         palvec.pop();
         assert!(!palvec.palette.contains(8));
         assert!(!palvec.palette.contains(5));
+    }
+
+    #[test]
+    fn many_palette_entries() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        for i in 0..50 {
+            palvec.push(i);
+        }
+        for i in (0..50).rev() {
+            dbg!(i);
+            assert!(palvec.palette.contains(i));
+            assert_eq!(palvec.pop().map_copied(), Some(i));
+            assert!(!palvec.palette.contains(i));
+        }
+    }
+
+    #[test]
+    fn entry_count_up_and_down_many_times() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        for i in 2..50 {
+            for j in 0..i {
+                palvec.push(j);
+            }
+            for j in (0..i).rev() {
+                dbg!(palvec.len());
+                assert!(palvec.palette.contains(j));
+                assert_eq!(palvec.pop().map_copied(), Some(j));
+                assert!(!palvec.palette.contains(j));
+            }
+        }
     }
 }

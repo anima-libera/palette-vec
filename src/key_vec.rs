@@ -239,10 +239,11 @@ impl KeyVec {
                         // so `0 <= len-1`.
                         self.get_unchecked(len - 1)
                     };
+                    let vec_len_in_bits = self.vec_or_len.vec.len();
                     self.vec_or_len
                         .vec
                         .deref_mut()
-                        .truncate(len - self.keys_size);
+                        .truncate(vec_len_in_bits - self.keys_size);
                     Some(last_key)
                 }
             }
