@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
 
-use crate::key::Key;
+use crate::{
+    key::{key_min_size, Key},
+    key_vec::KeyVec,
+};
 
 /// Manages the attribution of keys to new palette entries.
 ///
@@ -55,6 +58,23 @@ impl KeyAllocator {
         self.sparse_vec
             .pop()
             .unwrap_or_else(|| self.allocate_from_range())
+    }
+
+    /// Allocates the smallest unused key value.
+    ///
+    /// It is guarenteed that it will fit in `key_vec.keys_size()` bits,
+    /// by properly increasing the `keys_size` of the given `key_vec` if necessary.
+    pub(crate) fn allocate_and_make_sure_it_fits(&mut self, key_vec: &mut KeyVec) -> Key {
+        let new_key = self.allocate();
+        let min_size = key_min_size(new_key);
+        let does_it_already_fit = min_size <= key_vec.keys_size();
+        if does_it_already_fit {
+            // It already fits, nothing to do.
+        } else {
+            // Properly making `keys_size` bigger so that the new key fits.
+            key_vec.change_keys_size(min_size);
+        }
+        new_key
     }
 
     /// Deallocates a key value, making it available for some future allocation.

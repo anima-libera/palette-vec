@@ -1,10 +1,7 @@
-use std::collections::{hash_map::Entry, HashMap};
-
-use crate::key::{key_min_size, Key};
 use crate::key_alloc::KeyAllocator;
 use crate::key_vec::KeyVec;
+use crate::palette::Palette;
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
-use fxhash::FxHashMap;
 
 // TODO: Better doc!
 pub struct PalVec<T>
@@ -19,17 +16,11 @@ where
     /// Accessing index `i` of the `PalVec` array will really access `palette[key_vec[i]]`.
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
-    // TODO: Better optimize the palette type thing!
-    palette: FxHashMap<Key, PaletteEntry<T>>,
+    palette: Palette<T>,
     /// This is used to keep track of all the unused keys so that when we want to allocate a new
     /// key to use then we can just get its smallest member, and when we no longer use a key we
     /// can deallocate it and return it to the set it represents.
     key_allocator: KeyAllocator,
-}
-
-struct PaletteEntry<T> {
-    count: usize,
-    element: T,
 }
 
 impl<T> PalVec<T>
@@ -43,7 +34,7 @@ where
     pub fn new() -> Self {
         Self {
             key_vec: KeyVec::new(),
-            palette: HashMap::default(),
+            palette: Palette::new(),
             key_allocator: KeyAllocator::new(),
         }
     }
@@ -58,17 +49,7 @@ where
         } else {
             Self {
                 key_vec: KeyVec::with_len(len),
-                palette: {
-                    let mut palette = HashMap::default();
-                    palette.insert(
-                        0,
-                        PaletteEntry {
-                            count: len,
-                            element,
-                        },
-                    );
-                    palette
-                },
+                palette: Palette::with_one_entry(element, len),
                 key_allocator: KeyAllocator::with_zero_already_allocated(),
             }
         }
@@ -79,108 +60,9 @@ where
         self.key_vec.len()
     }
 
-    /// Returns the number of elements in the palette,
-    /// which is the number of *different* elements in the `PalVec`'s array.
-    pub fn palette_len(&self) -> usize {
-        self.palette.len()
-    }
-
     /// Returns `true` if the `PalVec` array contains no elements.
     pub fn is_empty(&self) -> bool {
         self.key_vec.is_empty()
-    }
-
-    /// Allocates the smallest unused key value.
-    ///
-    /// It is quarenteed that it will fit in `keys_size` bits,
-    /// by properly increasing `keys_size` if necessary.
-    fn allocate_new_key_and_make_it_fit(&mut self) -> Key {
-        let new_key = self.key_allocator.allocate();
-        let min_size = key_min_size(new_key);
-        let does_it_already_fit = min_size <= self.key_vec.keys_size();
-        if does_it_already_fit {
-            // It already fits, nothing to do.
-        } else {
-            // Properly making `keys_size` bigger so that the new key fits.
-            self.key_vec.change_keys_size(min_size);
-        }
-        new_key
-    }
-
-    /// Tells the palette that `that_many` new `element` instances
-    /// will be added to the `PalVec`'s array,
-    /// and the palette must update its map and counts and all and returns the key to `element`,
-    /// allocating this key if `element` is new in the palette.
-    ///
-    /// Only touches the palette and key allocator.
-    /// The caller must make sure that indeed `that_many` new instances of the returned key
-    /// are indeed added to `key_vec`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
-    fn add_element_instances_to_palette(
-        &mut self,
-        element: impl ViewToOwned<T>,
-        that_many: usize,
-    ) -> Key {
-        let already_in_palette = self
-            .palette
-            .iter_mut()
-            .find(|(_key, palette_entry)| element.eq(&palette_entry.element));
-        if let Some((&key, entry)) = already_in_palette {
-            entry.count = entry
-                .count
-                .checked_add(that_many)
-                .expect("Palette entry count overflow (max is usize::MAX)");
-            key
-        } else {
-            let key = self.allocate_new_key_and_make_it_fit();
-            self.palette.insert(
-                key,
-                PaletteEntry {
-                    count: that_many,
-                    element: element.into_owned(),
-                },
-            );
-            key
-        }
-    }
-
-    /// Tells the palette that `that_many` instances of the element corresponding to the given key
-    /// will be removed from the `PalVec`'s array,
-    /// and it must update its map and counts and all,
-    /// possiby deallocating the key if the element has no more instances.
-    ///
-    /// Only touches the palette and key allocator.
-    /// The caller must make sure that indeed `that_many` instances of the given key
-    /// are indeed removed from `key_vec`.
-    fn remove_element_instances_from_palette(
-        &mut self,
-        key: Key,
-        that_many: usize,
-    ) -> BorrowedOrOwned<'_, T> {
-        let map_entry = self.palette.entry(key);
-        let Entry::Occupied(mut occupied_entry) = map_entry else {
-            panic!("Bug: Removing element instances by a key that is unused");
-        };
-        let palette_entry = occupied_entry.get_mut();
-        palette_entry.count = palette_entry
-            .count
-            .checked_sub(that_many)
-            .expect("Bug: Removing more element instances from palette than its count");
-        let count = palette_entry.count;
-        if count == 0 {
-            let entry_removed = occupied_entry.remove();
-            self.key_allocator.deallocate(key);
-            BorrowedOrOwned::Owned(entry_removed.element)
-        } else {
-            BorrowedOrOwned::Borrowed(&occupied_entry.into_mut().element)
-        }
-    }
-
-    fn get_element_from_used_key(&self, key: Key) -> Option<&T> {
-        self.palette.get(&key).map(|entry| &entry.element)
     }
 
     /// Returns a reference to the `PalVec`'s array element at the given `index`.
@@ -189,14 +71,17 @@ where
     pub fn get(&self, index: usize) -> Option<&T> {
         let key = self.key_vec.get(index)?;
         let element = self
-            .get_element_from_used_key(key)
+            .palette
+            .get(key)
             .expect("Bug: Key used in `key_vec` is not used by the palette");
         Some(element)
     }
 
     /// Sets the `PalVec`'s array element at the given `index` to the given `element`.
-    ///
     /// Subsequent calls to `get` with that `index` will return `element`.
+    ///
+    /// This operation is *O*(1) if the `keys_size` doesn't increase,
+    /// but if it does increase (which happens rarely) then it is *O*(*len*).
     ///
     /// # Panics
     ///
@@ -211,6 +96,13 @@ where
             panic!("set index (is {index}) should be < len (is {})", self.len());
         }
 
+        // We just replace the element at `index` by the given element.
+        //
+        // The removed element is removed from the palette before the new element is added to it.
+        // This may allow the key allocator to spare using bigger keys that may require a resizing
+        // of `keys_size` to fit in the case where the removed element was the last instance of it
+        // and the new element had no instance yet (which allows the key allocator to reuse the key
+        // of the removed element for the new one).
         let key_of_elemement_to_remove = {
             if self.key_vec.keys_size() == 0 {
                 0
@@ -219,13 +111,23 @@ where
                 unsafe { self.key_vec.get_unchecked(index) }
             }
         };
-        self.remove_element_instances_from_palette(key_of_elemement_to_remove, 1);
-        let key_of_element_to_add = self.add_element_instances_to_palette(element, 1);
+        self.palette.remove_element_instances(
+            key_of_elemement_to_remove,
+            1,
+            &mut self.key_allocator,
+        );
+        let key_of_element_to_add = self.palette.add_element_instances(
+            element,
+            1,
+            &mut self.key_allocator,
+            &mut self.key_vec,
+        );
         if self.key_vec.keys_size() == 0 {
             // Nothing to do here, all the keys have the same value of zero.
             debug_assert_eq!(key_of_element_to_add, 0);
         } else {
-            // SAFETY: We checked the bounds, we have `index < self.len()`.
+            // SAFETY: We checked the bounds, we have `index < self.len()`,
+            // and `add_element_instances` made sure that the key fits.
             unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
         }
     }
@@ -236,7 +138,12 @@ where
     ///
     /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
     pub fn push(&mut self, element: impl ViewToOwned<T>) {
-        let key = self.add_element_instances_to_palette(element, 1);
+        let key = self.palette.add_element_instances(
+            element,
+            1,
+            &mut self.key_allocator,
+            &mut self.key_vec,
+        );
         self.key_vec.push(key);
     }
 
@@ -247,9 +154,23 @@ where
     /// then it is removed from the palette and returned in a [`BorrowedOrOwned::Owned`].
     /// Else, it is borrowed from the palette and returned in a [`BorrowedOrOwned::Borrowed`].
     pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, T>> {
-        self.key_vec
-            .pop()
-            .map(|key| self.remove_element_instances_from_palette(key, 1))
+        self.key_vec.pop().map(|key| {
+            self.palette
+                .remove_element_instances(key, 1, &mut self.key_allocator)
+        })
+    }
+
+    /// Returns the number of elements in the palette,
+    /// which is the number of *different* elements in the `PalVec`'s array.
+    pub fn palette_len(&self) -> usize {
+        self.palette.len()
+    }
+
+    /// Returns `true` if the palette contains the given element.
+    ///
+    /// This operation is *O*(*palette_len*).
+    pub fn palette_contains(&self, element: impl ViewToOwned<T>) -> bool {
+        self.palette.contains(element)
     }
 }
 
@@ -264,8 +185,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::borrowed_or_owned::{
-        OptionBorrowedOrOwnedAsRef, OptionBorrowedOrOwnedCopied,
+    use crate::{
+        key::{key_min_size, Key},
+        utils::borrowed_or_owned::{OptionBorrowedOrOwnedAsRef, OptionBorrowedOrOwnedCopied},
     };
 
     use super::*;
@@ -391,8 +313,8 @@ mod tests {
         let mut palvec: PalVec<i32> = PalVec::new();
         palvec.push(8);
         palvec.push(5);
-        assert!(palvec.palette.values().any(|v| v.element == 8));
-        assert!(palvec.palette.values().any(|v| v.element == 5));
+        assert!(palvec.palette.contains(8));
+        assert!(palvec.palette.contains(5));
     }
 
     #[test]
@@ -402,7 +324,7 @@ mod tests {
         palvec.push(5);
         palvec.pop();
         palvec.pop();
-        assert!(!palvec.palette.values().any(|v| v.element == 8));
-        assert!(!palvec.palette.values().any(|v| v.element == 5));
+        assert!(!palvec.palette.contains(8));
+        assert!(!palvec.palette.contains(5));
     }
 }
