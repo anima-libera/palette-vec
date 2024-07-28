@@ -373,7 +373,9 @@ impl KeyVec {
                                 let bit_range = Self::key_bit_range(old_keys_size, i);
                                 self.vec_or_len.vec.deref_mut()[bit_range].load()
                             };
-                            // Move the key to its new position, and represent it with the new key size.
+                            // Move the key to its new position and
+                            // represent it with the new key size
+                            // (which is bigger than the old key size so we know the key fits).
                             {
                                 let bit_range = Self::key_bit_range(new_keys_size, i);
                                 self.vec_or_len.vec.deref_mut()[bit_range].store(key);
@@ -385,6 +387,19 @@ impl KeyVec {
             }
         }
         self.keys_size = new_keys_size;
+    }
+
+    /// Calls `change_keys_size` if required to make sure
+    /// that the given key can be used in the `KeyVec`.
+    pub(crate) fn make_sure_a_key_fits(&mut self, key: Key) {
+        let min_size = key_min_size(key);
+        let does_it_already_fit = min_size <= self.keys_size();
+        if does_it_already_fit {
+            // It already fits, nothing to do.
+        } else {
+            // Properly making `keys_size` bigger so that the new key fits.
+            self.change_keys_size(min_size);
+        }
     }
 }
 

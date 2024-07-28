@@ -1,4 +1,3 @@
-- Allow to not use the `KeyAllocator` and instead deduce used and unused keys by looking in the palette.
 - Add an (opt-in) type parameter on `PalVec` that enables an other optimization:
   - a small index->(uncompressed key into a second palette) map that is checked before accessing via the `palette[keyvec[index]]` method.
   - so access is now `second_palette[small_map[index]].unwarp_or_else(palette[keyvec[index]])`.

@@ -1,9 +1,46 @@
 use std::cmp::Ordering;
 
-use crate::{
-    key::{key_min_size, Key},
-    key_vec::KeyVec,
-};
+use crate::{key::Key, palette::PaletteAsKeyAllocator};
+
+pub trait KeyAllocator {
+    /// Creates an empty key allocator.
+    fn new() -> Self;
+
+    /// Creates a key allocator that considers the key value `0` as allocated already.
+    fn with_zero_already_allocated() -> Self;
+
+    /// Allocates the smallest available key value.
+    /// May return a key value that was deallocated before.
+    fn allocate(&mut self, palette: &impl PaletteAsKeyAllocator) -> Key;
+
+    /// Deallocates a key value, making it available for some future allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `key` was already not allocated.
+    fn deallocate(&mut self, key: Key);
+}
+
+/// Key allocator that is actually just using the palette to find unused keys when allocating.
+///
+/// Technically the palette can be a key allocator, it is just a little bit slower to allocate.
+pub struct KeyAllocatorZst;
+
+impl KeyAllocator for KeyAllocatorZst {
+    fn new() -> Self {
+        Self
+    }
+
+    fn with_zero_already_allocated() -> Self {
+        Self
+    }
+
+    fn allocate(&mut self, palette: &impl PaletteAsKeyAllocator) -> Key {
+        palette.get_smallest_unused_key()
+    }
+
+    fn deallocate(&mut self, _key: Key) {}
+}
 
 /// Manages the attribution of keys to new palette entries.
 ///
@@ -16,18 +53,18 @@ use crate::{
 /// this interval is `0..range_start`; the unused keys that are in this interval
 /// are in `sparse_vec` (which is sorted in reverse for a fast pop of its min value).
 /// - an interval where all the key values are unused, `range_start..`.
-pub struct KeyAllocator {
+pub struct KeyAllocatorFast {
     /// Always sorted in reverse (higest member first, lowest member last).
     sparse_vec: Vec<Key>,
     range_start: Key,
 }
 
-impl KeyAllocator {
+impl KeyAllocator for KeyAllocatorFast {
     /// Creates an empty `KeyAllocator`.
     ///
     /// Does not allocate now,
     /// allocations are done at some point if necessary after at least one key deallocation.
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
             sparse_vec: Vec::new(),
             range_start: 0,
@@ -38,43 +75,20 @@ impl KeyAllocator {
     ///
     /// Does not allocate now,
     /// allocations are done at some point if necessary after at least one key deallocation.
-    pub(crate) fn with_zero_already_allocated() -> Self {
+    fn with_zero_already_allocated() -> Self {
         Self {
             sparse_vec: Vec::new(),
             range_start: 1,
         }
     }
 
-    /// Allocates the smallest available key value from the `range_start..` range.
-    fn allocate_from_range(&mut self) -> Key {
-        self.range_start += 1;
-        self.range_start - 1
-    }
-
     /// Allocates the smallest available key value.
     /// May return a key value that was deallocated before.
-    pub(crate) fn allocate(&mut self) -> Key {
+    fn allocate(&mut self, _palette: &impl PaletteAsKeyAllocator) -> Key {
         // Smallest member is last in `sparse_vec`.
         self.sparse_vec
             .pop()
             .unwrap_or_else(|| self.allocate_from_range())
-    }
-
-    /// Allocates the smallest unused key value.
-    ///
-    /// It is guarenteed that it will fit in `key_vec.keys_size()` bits,
-    /// by properly increasing the `keys_size` of the given `key_vec` if necessary.
-    pub(crate) fn allocate_and_make_sure_it_fits(&mut self, key_vec: &mut KeyVec) -> Key {
-        let new_key = self.allocate();
-        let min_size = key_min_size(new_key);
-        let does_it_already_fit = min_size <= key_vec.keys_size();
-        if does_it_already_fit {
-            // It already fits, nothing to do.
-        } else {
-            // Properly making `keys_size` bigger so that the new key fits.
-            key_vec.change_keys_size(min_size);
-        }
-        new_key
     }
 
     /// Deallocates a key value, making it available for some future allocation.
@@ -82,7 +96,7 @@ impl KeyAllocator {
     /// # Panics
     ///
     /// Panics if the `key` was already not allocated.
-    pub(crate) fn deallocate(&mut self, key: Key) {
+    fn deallocate(&mut self, key: Key) {
         match (key + 1).cmp(&self.range_start) {
             Ordering::Greater => {
                 // The key is already in the range `range_start..`.
@@ -118,6 +132,14 @@ impl KeyAllocator {
             }
         }
     }
+}
+
+impl KeyAllocatorFast {
+    /// Allocates the smallest available key value from the `range_start..` range.
+    fn allocate_from_range(&mut self) -> Key {
+        self.range_start += 1;
+        self.range_start - 1
+    }
 
     /// Attempt to reduce the size of `sparse_vec`'s content.
     /// If successful it can prevent a reallocation of `sparse_vec` when adding a key to it.
@@ -151,35 +173,44 @@ impl KeyAllocator {
 mod tests {
     use super::*;
 
+    /// When testing `KeyAllocatorFast`, the API still required an `impl PaletteAsKeyAllocator`
+    /// even though this key allocator doesn't use it.
+    struct DummyPalette;
+    impl PaletteAsKeyAllocator for DummyPalette {
+        fn get_smallest_unused_key(&self) -> Key {
+            panic!("`DummyPalette` got asked for an unused key")
+        }
+    }
+
     #[test]
     fn key_allocation_simple() {
-        let mut al = KeyAllocator::new();
-        assert_eq!(al.allocate(), 0);
-        assert_eq!(al.allocate(), 1);
-        assert_eq!(al.allocate(), 2);
+        let mut al = KeyAllocatorFast::new();
+        assert_eq!(al.allocate(&DummyPalette), 0);
+        assert_eq!(al.allocate(&DummyPalette), 1);
+        assert_eq!(al.allocate(&DummyPalette), 2);
         assert_eq!(al.sparse_vec, &[]);
         assert_eq!(al.range_start, 3);
     }
 
     #[test]
     fn key_allocation_and_deallocation() {
-        let mut al = KeyAllocator::new();
-        assert_eq!(al.allocate(), 0);
-        let some_key = al.allocate();
+        let mut al = KeyAllocatorFast::new();
+        assert_eq!(al.allocate(&DummyPalette), 0);
+        let some_key = al.allocate(&DummyPalette);
         assert_eq!(some_key, 1);
-        assert_eq!(al.allocate(), 2);
+        assert_eq!(al.allocate(&DummyPalette), 2);
         al.deallocate(some_key);
         assert_eq!(al.sparse_vec, &[some_key]);
         assert_eq!(al.range_start, 3);
-        assert_eq!(al.allocate(), some_key);
+        assert_eq!(al.allocate(&DummyPalette), some_key);
     }
 
     #[test]
     fn key_deallocation_unused_keys_clearing_manually() {
-        let mut al = KeyAllocator::new();
+        let mut al = KeyAllocatorFast::new();
         let mut keys = vec![];
         for _ in 0..20 {
-            keys.push(al.allocate());
+            keys.push(al.allocate(&DummyPalette));
         }
         for key in keys.into_iter() {
             al.deallocate(key);
@@ -194,10 +225,10 @@ mod tests {
 
     #[test]
     fn key_deallocation_unused_keys_clearing_convenient_order() {
-        let mut al = KeyAllocator::new();
+        let mut al = KeyAllocatorFast::new();
         let mut keys = vec![];
         for _ in 0..20 {
-            keys.push(al.allocate());
+            keys.push(al.allocate(&DummyPalette));
         }
         for key in keys.into_iter().rev() {
             al.deallocate(key);

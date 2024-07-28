@@ -36,7 +36,7 @@ where
         &mut self,
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
-        key_allocator: &mut KeyAllocator,
+        key_allocator: &mut impl KeyAllocator,
         key_vec: &mut KeyVec,
     ) -> Key;
 
@@ -52,7 +52,7 @@ where
         &mut self,
         key: Key,
         that_many: NonZeroUsize,
-        key_allocator: &mut KeyAllocator,
+        key_allocator: &mut impl KeyAllocator,
     ) -> BorrowedOrOwned<'_, T>;
 
     /// Returns a reference to the element associated to the given `key`,
@@ -64,6 +64,10 @@ where
 
     /// Returns an iterator over the keys currently used by the palette.
     fn used_keys(&self) -> impl Iterator<Item = Key>;
+}
+
+pub trait PaletteAsKeyAllocator {
+    fn get_smallest_unused_key(&self) -> Key;
 }
 
 pub(crate) struct PaletteEntry<T> {
@@ -125,7 +129,7 @@ where
         &mut self,
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
-        key_allocator: &mut KeyAllocator,
+        key_allocator: &mut impl KeyAllocator,
         key_vec: &mut KeyVec,
     ) -> Key {
         match self {
@@ -160,7 +164,7 @@ where
         &mut self,
         key: Key,
         that_many: NonZeroUsize,
-        key_allocator: &mut KeyAllocator,
+        key_allocator: &mut impl KeyAllocator,
     ) -> BorrowedOrOwned<'_, T> {
         match self {
             Self::Vec(vec) => vec.remove_element_instances(key, that_many, key_allocator),
@@ -190,6 +194,7 @@ where
     }
 
     /// Returns an iterator over the keys currently used by the palette.
+    #[inline] // Inline to help with iterator-related optimizations.
     fn used_keys(&self) -> impl Iterator<Item = Key> {
         // Returning either one or the other of two different opaque type iterators is impossible.
         // Or so I thought before actually trying, but it turns out it is as simple as that.
@@ -310,7 +315,7 @@ where
         &mut self,
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
-        key_allocator: &mut KeyAllocator,
+        key_allocator: &mut impl KeyAllocator,
         key_vec: &mut KeyVec,
     ) -> Key {
         let already_in_palette = self
@@ -335,7 +340,8 @@ where
                 .expect("Palette entry count overflow (max is usize::MAX)");
             key
         } else {
-            let key = key_allocator.allocate_and_make_sure_it_fits(key_vec);
+            let key = key_allocator.allocate(self);
+            key_vec.make_sure_a_key_fits(key);
             // Making sure that `vec.len()` is at least `key + 1`.
             if self.vec.len() <= key {
                 self.vec.resize_with(key + 1, || PaletteEntry {
@@ -374,7 +380,7 @@ where
         &mut self,
         key: Key,
         that_many: NonZeroUsize,
-        key_allocator: &mut KeyAllocator,
+        key_allocator: &mut impl KeyAllocator,
     ) -> BorrowedOrOwned<'_, T> {
         let palette_entry = self
             .vec
@@ -444,6 +450,19 @@ where
     }
 }
 
+impl<T> PaletteAsKeyAllocator for PaletteVec<T>
+where
+    T: Clone + Eq,
+{
+    fn get_smallest_unused_key(&self) -> Key {
+        self.vec
+            .iter()
+            .enumerate()
+            .find_map(|(key, palette_entry)| (palette_entry.count == 0).then_some(key))
+            .unwrap_or(self.vec.len())
+    }
+}
+
 pub struct PaletteMap<T>
 where
     T: Clone + Eq,
@@ -499,7 +518,7 @@ where
         &mut self,
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
-        key_allocator: &mut KeyAllocator,
+        key_allocator: &mut impl KeyAllocator,
         key_vec: &mut KeyVec,
     ) -> Key {
         let already_in_palette = self
@@ -513,7 +532,8 @@ where
                 .expect("Palette entry count overflow (max is usize::MAX)");
             key
         } else {
-            let key = key_allocator.allocate_and_make_sure_it_fits(key_vec);
+            let key = key_allocator.allocate(self);
+            key_vec.make_sure_a_key_fits(key);
             self.map.insert(
                 key,
                 PaletteEntry {
@@ -537,7 +557,7 @@ where
         &mut self,
         key: Key,
         that_many: NonZeroUsize,
-        key_allocator: &mut KeyAllocator,
+        key_allocator: &mut impl KeyAllocator,
     ) -> BorrowedOrOwned<'_, T> {
         let map_entry = self.map.entry(key);
         let Entry::Occupied(mut occupied_entry) = map_entry else {
@@ -578,5 +598,19 @@ where
     /// Returns an iterator over the keys currently used by the palette.
     fn used_keys(&self) -> impl Iterator<Item = Key> {
         self.map.keys().cloned()
+    }
+}
+
+impl<T> PaletteAsKeyAllocator for PaletteMap<T>
+where
+    T: Clone + Eq,
+{
+    fn get_smallest_unused_key(&self) -> Key {
+        for key in 0.. {
+            if !self.map.contains_key(&key) {
+                return key;
+            }
+        }
+        unreachable!()
     }
 }

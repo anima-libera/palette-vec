@@ -1,13 +1,13 @@
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
-use crate::key_alloc::KeyAllocator;
+use crate::key_alloc::{KeyAllocator, KeyAllocatorZst};
 use crate::key_vec::KeyVec;
 use crate::palette::{Palette, PaletteVecOrMap};
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
 // TODO: Better doc!
-pub struct PalVec<T, P = PaletteVecOrMap<T>>
+pub struct PalVec<T, P = PaletteVecOrMap<T>, A: KeyAllocator = KeyAllocatorZst>
 where
     T: Clone + Eq,
     P: Palette<T>,
@@ -27,7 +27,7 @@ where
     /// This is used to keep track of all the unused keys so that when we want to allocate a new
     /// key to use then we can just get its smallest member, and when we no longer use a key we
     /// can deallocate it and return it to the set it represents.
-    key_allocator: KeyAllocator,
+    key_allocator: A,
 }
 
 impl<T, P> PalVec<T, P>
@@ -44,7 +44,7 @@ where
             key_vec: KeyVec::new(),
             palette: P::new(),
             _phantom: PhantomData,
-            key_allocator: KeyAllocator::new(),
+            key_allocator: KeyAllocatorZst::new(),
         }
     }
 
@@ -63,7 +63,7 @@ where
                 key_vec: KeyVec::with_len(len),
                 palette: P::with_one_entry(element, len),
                 _phantom: PhantomData,
-                key_allocator: KeyAllocator::with_zero_already_allocated(),
+                key_allocator: KeyAllocatorZst::with_zero_already_allocated(),
             }
         }
     }
