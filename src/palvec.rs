@@ -11,6 +11,7 @@ pub struct PalVec<T, P = PaletteVecOrMap<T>, A: KeyAllocator = KeyAllocatorZst>
 where
     T: Clone + Eq,
     P: Palette<T>,
+    A: KeyAllocator,
 {
     /// Each element in the `PalVec`'s array is represented by a key here,
     /// that maps to the element's value via the palette.
@@ -30,10 +31,11 @@ where
     key_allocator: A,
 }
 
-impl<T, P> PalVec<T, P>
+impl<T, P, A> PalVec<T, P, A>
 where
     T: Clone + Eq,
     P: Palette<T>,
+    A: KeyAllocator,
 {
     /// Creates an empty `PalVec`.
     ///
@@ -44,7 +46,7 @@ where
             key_vec: KeyVec::new(),
             palette: P::new(),
             _phantom: PhantomData,
-            key_allocator: KeyAllocatorZst::new(),
+            key_allocator: A::new(),
         }
     }
 
@@ -63,7 +65,7 @@ where
                 key_vec: KeyVec::with_len(len),
                 palette: P::with_one_entry(element, len),
                 _phantom: PhantomData,
-                key_allocator: KeyAllocatorZst::with_zero_already_allocated(),
+                key_allocator: A::with_zero_already_allocated(),
             }
         }
     }
