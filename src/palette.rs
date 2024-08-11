@@ -37,7 +37,8 @@ where
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
         key_allocator: &mut impl KeyAllocator,
-        key_vec: &mut KeyVec,
+        key_vec: Option<&mut KeyVec>,
+        reserved_key: Option<Key>,
     ) -> Key;
 
     /// Tells the palette that `that_many` instances of the element corresponding to the given key
@@ -60,14 +61,14 @@ where
     fn get(&self, key: Key) -> Option<&T>;
 
     /// Returns `true` if the palette contains the given element.
-    fn contains(&self, element: impl ViewToOwned<T>) -> bool;
+    fn contains(&self, element: &impl ViewToOwned<T>) -> bool;
 
     /// Returns an iterator over the keys currently used by the palette.
     fn used_keys(&self) -> impl Iterator<Item = Key>;
 }
 
 pub trait PaletteAsKeyAllocator {
-    fn get_smallest_unused_key(&self) -> Key;
+    fn get_smallest_unused_key(&self, outlier_key: Option<Key>) -> Key;
 }
 
 pub(crate) struct PaletteEntry<T> {
@@ -130,18 +131,34 @@ where
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
         key_allocator: &mut impl KeyAllocator,
-        key_vec: &mut KeyVec,
+        key_vec: Option<&mut KeyVec>,
+        reserved_key: Option<Key>,
     ) -> Key {
         match self {
             Self::Vec(vec) => {
-                let key = vec.add_element_instances(element, that_many, key_allocator, key_vec);
+                let key = vec.add_element_instances(
+                    element,
+                    that_many,
+                    key_allocator,
+                    key_vec,
+                    reserved_key,
+                );
                 // If the vec gets too long, we switch to a map.
+                //
+                // TODO: Instead of doing this, we should switch to a map when the
+                // vec becomes very sparse because this is the only case where a map is better
+                // than a vec.
+                // Also, in such case, it also would be intresting for the user to trigger
+                // a reassignment of entries to smaller keys to "unsparse" the allocated keys.
+                // The palette is not what is important, having a small max allocated key value is.
                 if vec.len() > 16 {
                     self.use_map_variant();
                 }
                 key
             }
-            Self::Map(map) => map.add_element_instances(element, that_many, key_allocator, key_vec),
+            Self::Map(map) => {
+                map.add_element_instances(element, that_many, key_allocator, key_vec, reserved_key)
+            }
         }
     }
 
@@ -186,7 +203,7 @@ where
     ///
     /// This operation is *O*(*len*).
     #[inline]
-    fn contains(&self, element: impl ViewToOwned<T>) -> bool {
+    fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
         match self {
             Self::Vec(vec) => vec.contains(element),
             Self::Map(map) => map.contains(element),
@@ -226,6 +243,18 @@ where
         match self {
             Self::Vec(vec) => EitherIterator::A(vec.used_keys()),
             Self::Map(map) => EitherIterator::B(map.used_keys()),
+        }
+    }
+}
+
+impl<T> PaletteAsKeyAllocator for PaletteVecOrMap<T>
+where
+    T: Clone + Eq,
+{
+    fn get_smallest_unused_key(&self, reserved_key: Option<Key>) -> Key {
+        match self {
+            Self::Vec(vec) => vec.get_smallest_unused_key(reserved_key),
+            Self::Map(map) => map.get_smallest_unused_key(reserved_key),
         }
     }
 }
@@ -316,7 +345,8 @@ where
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
         key_allocator: &mut impl KeyAllocator,
-        key_vec: &mut KeyVec,
+        key_vec: Option<&mut KeyVec>,
+        reserved_key: Option<Key>,
     ) -> Key {
         let already_in_palette = self
             .vec
@@ -340,8 +370,10 @@ where
                 .expect("Palette entry count overflow (max is usize::MAX)");
             key
         } else {
-            let key = key_allocator.allocate(self);
-            key_vec.make_sure_a_key_fits(key);
+            let key = key_allocator.allocate(self, reserved_key);
+            if let Some(key_vec) = key_vec {
+                key_vec.make_sure_a_key_fits(key);
+            }
             // Making sure that `vec.len()` is at least `key + 1`.
             if self.vec.len() <= key {
                 self.vec.resize_with(key + 1, || PaletteEntry {
@@ -428,7 +460,7 @@ where
     /// Returns `true` if the palette contains the given element.
     ///
     /// This operation is *O*(*len*).
-    fn contains(&self, element: impl ViewToOwned<T>) -> bool {
+    fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
         self.vec.iter().any(|palette_entry| {
             0 < palette_entry.count
                 && ({
@@ -454,11 +486,13 @@ impl<T> PaletteAsKeyAllocator for PaletteVec<T>
 where
     T: Clone + Eq,
 {
-    fn get_smallest_unused_key(&self) -> Key {
+    fn get_smallest_unused_key(&self, outlier_key: Option<Key>) -> Key {
         self.vec
             .iter()
             .enumerate()
-            .find_map(|(key, palette_entry)| (palette_entry.count == 0).then_some(key))
+            .find_map(|(key, palette_entry)| {
+                (palette_entry.count == 0 && outlier_key != Some(key)).then_some(key)
+            })
             .unwrap_or(self.vec.len())
     }
 }
@@ -519,7 +553,8 @@ where
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
         key_allocator: &mut impl KeyAllocator,
-        key_vec: &mut KeyVec,
+        key_vec: Option<&mut KeyVec>,
+        reserved_key: Option<Key>,
     ) -> Key {
         let already_in_palette = self
             .map
@@ -532,8 +567,10 @@ where
                 .expect("Palette entry count overflow (max is usize::MAX)");
             key
         } else {
-            let key = key_allocator.allocate(self);
-            key_vec.make_sure_a_key_fits(key);
+            let key = key_allocator.allocate(self, reserved_key);
+            if let Some(key_vec) = key_vec {
+                key_vec.make_sure_a_key_fits(key);
+            }
             self.map.insert(
                 key,
                 PaletteEntry {
@@ -589,7 +626,7 @@ where
     /// Returns `true` if the palette contains the given element.
     ///
     /// This operation is *O*(*len*).
-    fn contains(&self, element: impl ViewToOwned<T>) -> bool {
+    fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
         self.map
             .values()
             .any(|palette_entry| element.eq(&palette_entry.element))
@@ -605,9 +642,9 @@ impl<T> PaletteAsKeyAllocator for PaletteMap<T>
 where
     T: Clone + Eq,
 {
-    fn get_smallest_unused_key(&self) -> Key {
+    fn get_smallest_unused_key(&self, reserved_key: Option<Key>) -> Key {
         for key in 0.. {
-            if !self.map.contains_key(&key) {
+            if !self.map.contains_key(&key) && Some(key) != reserved_key {
                 return key;
             }
         }

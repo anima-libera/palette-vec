@@ -11,7 +11,7 @@ pub trait KeyAllocator {
 
     /// Allocates the smallest available key value.
     /// May return a key value that was deallocated before.
-    fn allocate(&mut self, palette: &impl PaletteAsKeyAllocator) -> Key;
+    fn allocate(&mut self, palette: &impl PaletteAsKeyAllocator, reserved_key: Option<Key>) -> Key;
 
     /// Deallocates a key value, making it available for some future allocation.
     ///
@@ -35,8 +35,8 @@ impl KeyAllocator for KeyAllocatorZst {
         Self
     }
 
-    fn allocate(&mut self, palette: &impl PaletteAsKeyAllocator) -> Key {
-        palette.get_smallest_unused_key()
+    fn allocate(&mut self, palette: &impl PaletteAsKeyAllocator, reserved_key: Option<Key>) -> Key {
+        palette.get_smallest_unused_key(reserved_key)
     }
 
     fn deallocate(&mut self, _key: Key) {}
@@ -84,11 +84,22 @@ impl KeyAllocator for KeyAllocatorFast {
 
     /// Allocates the smallest available key value.
     /// May return a key value that was deallocated before.
-    fn allocate(&mut self, _palette: &impl PaletteAsKeyAllocator) -> Key {
+    fn allocate(
+        &mut self,
+        _palette: &impl PaletteAsKeyAllocator,
+        reserved_key: Option<Key>,
+    ) -> Key {
         // Smallest member is last in `sparse_vec`.
-        self.sparse_vec
+        let key = self
+            .sparse_vec
             .pop()
-            .unwrap_or_else(|| self.allocate_from_range())
+            .unwrap_or_else(|| self.allocate_from_range());
+        debug_assert_ne!(
+            Some(key),
+            reserved_key,
+            "Bug: Reserved key should have been allocated"
+        );
+        key
     }
 
     /// Deallocates a key value, making it available for some future allocation.
@@ -177,7 +188,7 @@ mod tests {
     /// even though this key allocator doesn't use it.
     struct DummyPalette;
     impl PaletteAsKeyAllocator for DummyPalette {
-        fn get_smallest_unused_key(&self) -> Key {
+        fn get_smallest_unused_key(&self, _reserved_key: Option<Key>) -> Key {
             panic!("`DummyPalette` got asked for an unused key")
         }
     }
@@ -185,9 +196,9 @@ mod tests {
     #[test]
     fn key_allocation_simple() {
         let mut al = KeyAllocatorFast::new();
-        assert_eq!(al.allocate(&DummyPalette), 0);
-        assert_eq!(al.allocate(&DummyPalette), 1);
-        assert_eq!(al.allocate(&DummyPalette), 2);
+        assert_eq!(al.allocate(&DummyPalette, None), 0);
+        assert_eq!(al.allocate(&DummyPalette, None), 1);
+        assert_eq!(al.allocate(&DummyPalette, None), 2);
         assert_eq!(al.sparse_vec, &[]);
         assert_eq!(al.range_start, 3);
     }
@@ -195,14 +206,14 @@ mod tests {
     #[test]
     fn key_allocation_and_deallocation() {
         let mut al = KeyAllocatorFast::new();
-        assert_eq!(al.allocate(&DummyPalette), 0);
-        let some_key = al.allocate(&DummyPalette);
+        assert_eq!(al.allocate(&DummyPalette, None), 0);
+        let some_key = al.allocate(&DummyPalette, None);
         assert_eq!(some_key, 1);
-        assert_eq!(al.allocate(&DummyPalette), 2);
+        assert_eq!(al.allocate(&DummyPalette, None), 2);
         al.deallocate(some_key);
         assert_eq!(al.sparse_vec, &[some_key]);
         assert_eq!(al.range_start, 3);
-        assert_eq!(al.allocate(&DummyPalette), some_key);
+        assert_eq!(al.allocate(&DummyPalette, None), some_key);
     }
 
     #[test]
@@ -210,7 +221,7 @@ mod tests {
         let mut al = KeyAllocatorFast::new();
         let mut keys = vec![];
         for _ in 0..20 {
-            keys.push(al.allocate(&DummyPalette));
+            keys.push(al.allocate(&DummyPalette, None));
         }
         for key in keys.into_iter() {
             al.deallocate(key);
@@ -228,7 +239,7 @@ mod tests {
         let mut al = KeyAllocatorFast::new();
         let mut keys = vec![];
         for _ in 0..20 {
-            keys.push(al.allocate(&DummyPalette));
+            keys.push(al.allocate(&DummyPalette, None));
         }
         for key in keys.into_iter().rev() {
             al.deallocate(key);
