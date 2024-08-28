@@ -1,17 +1,14 @@
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
-use crate::key_alloc::{KeyAllocator, KeyAllocatorZst};
 use crate::key_vec::KeyVec;
-use crate::palette::{Palette, PaletteVecOrMap};
+use crate::palette::Palette;
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
 // TODO: Better doc!
-pub struct PalVec<T, P = PaletteVecOrMap<T>, A: KeyAllocator = KeyAllocatorZst>
+pub struct PalVec<T>
 where
     T: Clone + Eq,
-    P: Palette<T>,
-    A: KeyAllocator,
 {
     /// Each element in the `PalVec`'s array is represented by a key here,
     /// that maps to the element's value via the palette.
@@ -21,21 +18,15 @@ where
     /// Accessing index `i` of the `PalVec` array will really access `palette[key_vec[i]]`.
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
-    palette: P,
+    palette: Palette<T>,
     /// The palette holds owned `T`s,
     /// also `T` has to be used in a field.
     _phantom: PhantomData<T>,
-    /// This is used to keep track of all the unused keys so that when we want to allocate a new
-    /// key to use then we can just get its smallest member, and when we no longer use a key we
-    /// can deallocate it and return it to the set it represents.
-    key_allocator: A,
 }
 
-impl<T, P, A> PalVec<T, P, A>
+impl<T> PalVec<T>
 where
     T: Clone + Eq,
-    P: Palette<T>,
-    A: KeyAllocator,
 {
     /// Creates an empty `PalVec`.
     ///
@@ -44,9 +35,8 @@ where
     pub fn new() -> Self {
         Self {
             key_vec: KeyVec::new(),
-            palette: P::new(),
+            palette: Palette::new(),
             _phantom: PhantomData,
-            key_allocator: A::new(),
         }
     }
 
@@ -63,9 +53,8 @@ where
             // so it matches.
             Self {
                 key_vec: KeyVec::with_len(len),
-                palette: P::with_one_entry(element, len),
+                palette: Palette::with_one_entry(element, len),
                 _phantom: PhantomData,
-                key_allocator: A::with_zero_already_allocated(),
             }
         }
     }
@@ -128,21 +117,17 @@ where
                 unsafe { self.key_vec.get_unchecked(index) }
             }
         };
-        self.palette.remove_element_instances(
-            key_of_elemement_to_remove,
-            {
+        self.palette
+            .remove_element_instances(key_of_elemement_to_remove, {
                 // SAFETY: 1 is not 0.
                 unsafe { NonZeroUsize::new_unchecked(1) }
-            },
-            &mut self.key_allocator,
-        );
+            });
         let key_of_element_to_add = self.palette.add_element_instances(
             element,
             {
                 // SAFETY: 1 is not 0.
                 unsafe { NonZeroUsize::new_unchecked(1) }
             },
-            &mut self.key_allocator,
             &mut self.key_vec,
         );
         if self.key_vec.keys_size() == 0 {
@@ -167,7 +152,6 @@ where
                 // SAFETY: 1 is not 0.
                 unsafe { NonZeroUsize::new_unchecked(1) }
             },
-            &mut self.key_allocator,
             &mut self.key_vec,
         );
         self.key_vec.push(key);
@@ -181,14 +165,10 @@ where
     /// Else, it is borrowed from the palette and returned in a [`BorrowedOrOwned::Borrowed`].
     pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, T>> {
         self.key_vec.pop().map(|key| {
-            self.palette.remove_element_instances(
-                key,
-                {
-                    // SAFETY: 1 is not 0.
-                    unsafe { NonZeroUsize::new_unchecked(1) }
-                },
-                &mut self.key_allocator,
-            )
+            self.palette.remove_element_instances(key, {
+                // SAFETY: 1 is not 0.
+                unsafe { NonZeroUsize::new_unchecked(1) }
+            })
         })
     }
 
@@ -206,10 +186,9 @@ where
     }
 }
 
-impl<T, P> Default for PalVec<T, P>
+impl<T> Default for PalVec<T>
 where
     T: Clone + Eq,
-    P: Palette<T>,
 {
     fn default() -> Self {
         Self::new()

@@ -1,7 +1,6 @@
 //! Palette-compressed Vec-like collection.
 
 mod key;
-mod key_alloc;
 mod key_vec;
 mod palette;
 mod palvec;
