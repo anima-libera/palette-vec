@@ -1,6 +1,10 @@
-use std::{mem::MaybeUninit, num::NonZeroUsize};
+use std::{marker::PhantomData, mem::MaybeUninit, num::NonZeroUsize};
 
-use crate::{key::Key, key_vec::KeyVec, utils::view_to_owned::ViewToOwned, BorrowedOrOwned};
+use crate::{
+    key::{PaletteKeyAllocator, PaletteKeyType},
+    utils::view_to_owned::ViewToOwned,
+    BorrowedOrOwned,
+};
 
 pub(crate) struct PaletteEntry<T> {
     count: usize,
@@ -8,16 +12,19 @@ pub(crate) struct PaletteEntry<T> {
     element: MaybeUninit<T>,
 }
 
-pub struct Palette<T>
+pub(crate) struct Palette<T, K>
 where
     T: Clone + Eq,
+    K: PaletteKeyType,
 {
     vec: Vec<PaletteEntry<T>>,
+    _phantom: PhantomData<K>,
 }
 
-impl<T> Palette<T>
+impl<T, K> Palette<T, K>
 where
     T: Clone + Eq,
+    K: PaletteKeyType,
 {
     /// Creates an empty palette.
     ///
@@ -25,7 +32,10 @@ where
     /// allocations are done when keys are added to it or it is told to reserve memory.
     #[inline]
     pub(crate) fn new() -> Self {
-        Self { vec: vec![] }
+        Self {
+            vec: vec![],
+            _phantom: PhantomData,
+        }
     }
 
     /// Creates a palette that initially contains one entry.
@@ -35,6 +45,7 @@ where
                 count,
                 element: MaybeUninit::new(element),
             }],
+            _phantom: PhantomData,
         }
     }
 
@@ -46,12 +57,16 @@ where
             .count()
     }
 
-    fn get_smallest_unused_key(&self) -> Key {
-        self.vec
-            .iter()
-            .enumerate()
-            .find_map(|(key, palette_entry)| (palette_entry.count == 0).then_some(key))
-            .unwrap_or(self.vec.len())
+    fn allocate_key(&self, key_allocator: impl PaletteKeyAllocator<K>) -> K {
+        let allocated_key = K::with_value(
+            self.vec
+                .iter()
+                .enumerate()
+                .find_map(|(key, palette_entry)| (palette_entry.count == 0).then_some(key))
+                .unwrap_or(self.vec.len()),
+        );
+        key_allocator.palette_allocate(allocated_key);
+        allocated_key
     }
 
     /// Tells the palette that `that_many` new `element` instances
@@ -70,35 +85,34 @@ where
         &mut self,
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
-        key_vec: &mut KeyVec,
-    ) -> Key {
-        let already_in_palette = self
-            .vec
-            .iter_mut()
-            .enumerate()
-            .find(|(_key, palette_entry)| {
-                if 0 < palette_entry.count {
-                    let entry_element = {
-                        // SAFETY: The entry's `count` is non zero so the element is initialized.
-                        unsafe { palette_entry.element.assume_init_ref() }
-                    };
-                    element.eq(entry_element)
-                } else {
-                    false
-                }
-            });
-        if let Some((key, palette_entry)) = already_in_palette {
+        key_allocator: impl PaletteKeyAllocator<K>,
+    ) -> K {
+        let already_in_palette =
+            self.vec
+                .iter_mut()
+                .enumerate()
+                .find(|(_key_value, palette_entry)| {
+                    if 0 < palette_entry.count {
+                        let entry_element = {
+                            // SAFETY: The entry's `count` is non zero so the element is initialized.
+                            unsafe { palette_entry.element.assume_init_ref() }
+                        };
+                        element.eq(entry_element)
+                    } else {
+                        false
+                    }
+                });
+        if let Some((key_value, palette_entry)) = already_in_palette {
             palette_entry.count = palette_entry
                 .count
                 .checked_add(that_many.get())
                 .expect("Palette entry count overflow (max is usize::MAX)");
-            key
+            K::with_value(key_value)
         } else {
-            let key = self.get_smallest_unused_key();
-            key_vec.make_sure_a_key_fits(key);
+            let key = self.allocate_key(key_allocator);
             // Making sure that `vec.len()` is at least `key + 1`.
-            if self.vec.len() <= key {
-                self.vec.resize_with(key + 1, || PaletteEntry {
+            if self.vec.len() <= key.value() {
+                self.vec.resize_with(key.value() + 1, || PaletteEntry {
                     count: 0,
                     element: MaybeUninit::uninit(),
                 });
@@ -106,7 +120,7 @@ where
             let palette_entry = {
                 // SAFETY: We just made sure that `vec.len()` is at least `key + 1`,
                 // so we cannot be out-of-bounds here.
-                unsafe { self.vec.get_mut(key).unwrap_unchecked() }
+                unsafe { self.vec.get_mut(key.value()).unwrap_unchecked() }
             };
             *palette_entry = PaletteEntry {
                 count: that_many.get(),
@@ -132,12 +146,12 @@ where
     /// Panics if `that_many` is more than the number of instances of the `element`.
     pub(crate) fn remove_element_instances(
         &mut self,
-        key: Key,
+        key: K,
         that_many: NonZeroUsize,
     ) -> BorrowedOrOwned<'_, T> {
         let palette_entry = self
             .vec
-            .get_mut(key)
+            .get_mut(key.value())
             .expect("Bug: Removing element instances by a key that is unused");
         palette_entry.count = palette_entry
             .count
@@ -167,9 +181,9 @@ where
 
     /// Returns a reference to the element associated to the given `key`,
     /// or `None` if the key is unused.
-    pub(crate) fn get(&self, key: Key) -> Option<&T> {
+    pub(crate) fn get(&self, key: K) -> Option<&T> {
         self.vec
-            .get(key)
+            .get(key.value())
             .filter(|palette_entry| 0 < palette_entry.count)
             .map(|palette_entry| {
                 // SAFETY: The entry's `count` is non zero so the element is initialized.
@@ -194,10 +208,12 @@ where
     }
 
     /// Returns an iterator over the keys currently used by the palette.
-    fn _used_keys(&self) -> impl Iterator<Item = Key> + '_ {
+    fn _used_keys(&self) -> impl Iterator<Item = K> + '_ {
         self.vec
             .iter()
             .enumerate()
-            .filter_map(|(key, palette_entry)| (0 < palette_entry.count).then_some(key))
+            .filter_map(|(key_value, palette_entry)| {
+                (0 < palette_entry.count).then_some(K::with_value(key_value))
+            })
     }
 }

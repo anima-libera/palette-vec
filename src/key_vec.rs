@@ -6,7 +6,7 @@ use std::{
 
 use bitvec::{field::BitField, order::Lsb0, slice::BitSlice, vec::BitVec, view::BitViewSized};
 
-use crate::key::{key_min_size, Key};
+use crate::key::{Key, PaletteKeyType};
 
 /// An array of keys, each being represented with [`Self::keys_size()`] bits exactly,
 /// without padding between keys (so they are probably not byte-aligned).
@@ -149,7 +149,7 @@ impl KeyVec {
         if index < self.len() {
             Some(if self.keys_size == 0 {
                 // Only possible key value when `keys_size` is zero.
-                0
+                Key::with_value(0)
             } else {
                 // SAFETY: `keys_size` is non-zero, and `index < self.len()`.
                 unsafe { self.get_unchecked(index) }
@@ -167,10 +167,11 @@ impl KeyVec {
     /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
     pub(crate) fn _set(&mut self, index: usize, key: Key) {
         if index < self.len() {
-            if key_min_size(key) <= self.keys_size {
+            let key_min_size = key.min_size();
+            if key_min_size <= self.keys_size {
                 if self.keys_size == 0 {
                     // Nothing to do, `key` is zero since `key_min_size(key) == 0`.
-                    debug_assert_eq!(key, 0);
+                    debug_assert_eq!(key, Key::with_value(0));
                 } else {
                     // SAFETY: We just checked all the conditions.
                     unsafe { self.set_unchecked(index, key) }
@@ -179,8 +180,7 @@ impl KeyVec {
                 // The key doesn't fit, `keys_size` is too small.
                 panic!(
                     "key min size (is {} bits) should be <= keys_size (is {})",
-                    key_min_size(key),
-                    self.keys_size,
+                    key_min_size, self.keys_size,
                 );
             }
         } else {
@@ -196,9 +196,10 @@ impl KeyVec {
     ///
     /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
     pub(crate) fn push(&mut self, key: Key) {
-        if key_min_size(key) <= self.keys_size {
+        let key_min_size = key.min_size();
+        if key_min_size <= self.keys_size {
             if self.keys_size == 0 {
-                debug_assert_eq!(key, 0);
+                debug_assert_eq!(key, Key::with_value(0));
                 // SAFETY: `keys_size` is zero so `len` is the active field.
                 unsafe { self.vec_or_len.len += 1 }
             } else {
@@ -209,8 +210,7 @@ impl KeyVec {
             // The key doesn't fit, `keys_size` is too small.
             panic!(
                 "key min size (is {} bits) should be <= keys_size (is {})",
-                key_min_size(key),
-                self.keys_size,
+                key_min_size, self.keys_size,
             );
         }
     }
@@ -224,7 +224,7 @@ impl KeyVec {
                     None
                 } else {
                     self.vec_or_len.len -= 1;
-                    Some(0)
+                    Some(Key::with_value(0))
                 }
             }
         } else {
@@ -260,7 +260,7 @@ impl KeyVec {
         debug_assert!(0 < self.keys_size);
         let bit_range = Self::key_bit_range(self.keys_size, index);
         debug_assert!(bit_range.end <= self.vec_or_len.vec.len());
-        self.vec_or_len.vec[bit_range].load()
+        Key::with_value(self.vec_or_len.vec[bit_range].load())
     }
 
     /// Sets the key at the given index to the given `key`.
@@ -272,10 +272,10 @@ impl KeyVec {
     /// `key_min_size(key)` must be `<= self.keys_size()`.
     pub(crate) unsafe fn set_unchecked(&mut self, index: usize, key: Key) {
         debug_assert!(0 < self.keys_size);
-        debug_assert!(key_min_size(key) <= self.keys_size);
+        debug_assert!(key.min_size() <= self.keys_size);
         let bit_range = Self::key_bit_range(self.keys_size, index);
         debug_assert!(bit_range.end <= self.vec_or_len.vec.len());
-        self.vec_or_len.vec.deref_mut()[bit_range].store(key);
+        self.vec_or_len.vec.deref_mut()[bit_range].store(key.value);
     }
 
     /// Appends the given `key` to the end of the `KeyVec`.
@@ -286,10 +286,10 @@ impl KeyVec {
     /// `key_min_size(key)` must be `<= self.keys_size()`.
     pub(crate) unsafe fn push_unchecked(&mut self, key: Key) {
         debug_assert!(0 < self.keys_size);
-        debug_assert!(key_min_size(key) <= self.keys_size);
-        let key_le = key.to_le();
+        debug_assert!(key.min_size() <= self.keys_size);
+        let key_le = key.value.to_le();
         let key_bits = key_le.as_raw_slice();
-        let key_bits: &BitSlice<Key, Lsb0> = BitSlice::from_slice(key_bits);
+        let key_bits: &BitSlice<usize, Lsb0> = BitSlice::from_slice(key_bits);
         // `keys_size` is <= `Key`'s size in bits, this won't go out-of-bounds.
         let key_bits = &key_bits[0..self.keys_size];
         self.vec_or_len
@@ -321,12 +321,12 @@ impl KeyVec {
     ///
     /// # Panics
     ///
-    /// Panics if `new_keys_size` is not `<= Key::BITS`.
+    /// Panics if `new_keys_size` is not `<= usize::BITS`.
     pub(crate) fn change_keys_size(&mut self, new_keys_size: usize) {
-        let max_key_size = Key::BITS as usize;
+        let max_key_size = usize::BITS as usize;
         if max_key_size < new_keys_size {
             panic!(
-                "new key size (is {} bits) should be <= `Key::BITS` (is {})",
+                "new key size (is {} bits) should be <= `usize::BITS` (is {})",
                 new_keys_size, max_key_size
             );
         }
@@ -363,22 +363,22 @@ impl KeyVec {
                         // old position and putting it at its new position (the position it would
                         // have if `keys_size` was `new_keys_size`) and extending it so that its
                         // representation takes `new_keys_size` bits.
-                        // The growing reigion of `≈i` newly resized keys at the end
-                        // and the shrinking reigion of `≈len-i` yet-to-be-resized keys at the start
-                        // never overlap because we resized the vec to accomodate for the
-                        // biggest size of the reigion with bigger keys.
-                        for i in (0..len).rev() {
+                        // The growing reigion of `≈index` newly resized keys at the end
+                        // and the shrinking reigion of `≈len-index` yet-to-be-resized keys
+                        // at the start never overlap because we resized the vec
+                        // to accomodate for the biggest size of the reigion with bigger keys.
+                        for index in (0..len).rev() {
                             // Get the last not-yet moved key from its old position.
                             let key: Key = {
-                                let bit_range = Self::key_bit_range(old_keys_size, i);
-                                self.vec_or_len.vec.deref_mut()[bit_range].load()
+                                let bit_range = Self::key_bit_range(old_keys_size, index);
+                                Key::with_value(self.vec_or_len.vec.deref_mut()[bit_range].load())
                             };
                             // Move the key to its new position and
                             // represent it with the new key size
                             // (which is bigger than the old key size so we know the key fits).
                             {
-                                let bit_range = Self::key_bit_range(new_keys_size, i);
-                                self.vec_or_len.vec.deref_mut()[bit_range].store(key);
+                                let bit_range = Self::key_bit_range(new_keys_size, index);
+                                self.vec_or_len.vec.deref_mut()[bit_range].store(key.value);
                             }
                         }
                     }
@@ -392,7 +392,7 @@ impl KeyVec {
     /// Calls `change_keys_size` if required to make sure
     /// that the given key can be used in the `KeyVec`.
     pub(crate) fn make_sure_a_key_fits(&mut self, key: Key) {
-        let min_size = key_min_size(key);
+        let min_size = key.min_size();
         let does_it_already_fit = min_size <= self.keys_size();
         if does_it_already_fit {
             // It already fits, nothing to do.
@@ -438,13 +438,13 @@ mod tests {
     fn key_size_zero_remains_len() {
         let mut key_vec = KeyVec::new();
         assert_is_len(&key_vec, 0);
-        key_vec.push(0);
+        key_vec.push(Key::with_value(0));
         assert_is_len(&key_vec, 1);
-        key_vec.push(0);
+        key_vec.push(Key::with_value(0));
         assert_is_len(&key_vec, 2);
-        key_vec.push(0);
+        key_vec.push(Key::with_value(0));
         assert_is_len(&key_vec, 3);
-        key_vec.push(0);
+        key_vec.push(Key::with_value(0));
         assert_is_len(&key_vec, 4);
     }
 
@@ -452,30 +452,30 @@ mod tests {
     fn key_size_nonzero_switches_to_vec() {
         let mut key_vec = KeyVec::new();
         assert_is_len(&key_vec, 0);
-        key_vec.push(0);
+        key_vec.push(Key::with_value(0));
         assert_is_len(&key_vec, 1);
-        key_vec.push(0);
+        key_vec.push(Key::with_value(0));
         assert_is_len(&key_vec, 2);
         key_vec.change_keys_size(1);
         assert_is_vec(&key_vec, 2);
-        key_vec.push(0);
+        key_vec.push(Key::with_value(0));
         assert_is_vec(&key_vec, 3);
-        key_vec.push(0);
+        key_vec.push(Key::with_value(0));
         assert_is_vec(&key_vec, 4);
     }
 
     #[test]
     fn can_push_max_key_for_any_size() {
         let mut key_vec = KeyVec::new();
-        key_vec.push(0);
-        for key_size in 1..=Key::BITS as usize {
-            let mak_key_for_given_size = {
+        key_vec.push(Key::with_value(0));
+        for key_size in 1..=usize::BITS as usize {
+            let mak_key_for_given_size = Key::with_value({
                 let mut value = 0;
                 for _i in 0..key_size {
                     value = (value << 1) | 1;
                 }
                 value
-            };
+            });
             key_vec.change_keys_size(key_size);
             key_vec.push(mak_key_for_given_size);
         }
@@ -485,12 +485,12 @@ mod tests {
     #[should_panic]
     fn cannot_set_key_size_too_big() {
         let mut key_vec = KeyVec::new();
-        key_vec.change_keys_size(Key::BITS as usize + 1);
+        key_vec.change_keys_size(usize::BITS as usize + 1);
     }
 
     #[test]
     fn can_set_key_size_to_max() {
         let mut key_vec = KeyVec::new();
-        key_vec.change_keys_size(Key::BITS as usize);
+        key_vec.change_keys_size(usize::BITS as usize);
     }
 }

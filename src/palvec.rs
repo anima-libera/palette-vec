@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 
+use crate::key::{Key, KeyAllocator, PaletteKeyType};
 use crate::key_vec::KeyVec;
 use crate::palette::Palette;
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
@@ -18,7 +19,7 @@ where
     /// Accessing index `i` of the `PalVec` array will really access `palette[key_vec[i]]`.
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
-    palette: Palette<T>,
+    palette: Palette<T, Key>,
     /// The palette holds owned `T`s,
     /// also `T` has to be used in a field.
     _phantom: PhantomData<T>,
@@ -111,7 +112,7 @@ where
         // of the removed element for the new one).
         let key_of_elemement_to_remove = {
             if self.key_vec.keys_size() == 0 {
-                0
+                Key::with_value(0)
             } else {
                 // SAFETY: We checked the bounds, we have `index < self.len()`.
                 unsafe { self.key_vec.get_unchecked(index) }
@@ -128,11 +129,13 @@ where
                 // SAFETY: 1 is not 0.
                 unsafe { NonZeroUsize::new_unchecked(1) }
             },
-            &mut self.key_vec,
+            KeyAllocator {
+                key_vec: &mut self.key_vec,
+            },
         );
         if self.key_vec.keys_size() == 0 {
             // Nothing to do here, all the keys have the same value of zero.
-            debug_assert_eq!(key_of_element_to_add, 0);
+            debug_assert_eq!(key_of_element_to_add, Key::with_value(0));
         } else {
             // SAFETY: We checked the bounds, we have `index < self.len()`,
             // and `add_element_instances` made sure that the key fits.
@@ -152,7 +155,9 @@ where
                 // SAFETY: 1 is not 0.
                 unsafe { NonZeroUsize::new_unchecked(1) }
             },
-            &mut self.key_vec,
+            KeyAllocator {
+                key_vec: &mut self.key_vec,
+            },
         );
         self.key_vec.push(key);
     }
@@ -197,9 +202,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        key::{key_min_size, Key},
-        utils::borrowed_or_owned::{OptionBorrowedOrOwnedAsRef, OptionBorrowedOrOwnedCopied},
+    use crate::utils::borrowed_or_owned::{
+        OptionBorrowedOrOwnedAsRef, OptionBorrowedOrOwnedCopied,
     };
 
     use super::*;
@@ -209,15 +213,6 @@ mod tests {
         let palvec: PalVec<()> = PalVec::new();
         assert!(palvec.is_empty());
         assert_eq!(palvec.len(), 0);
-    }
-
-    #[test]
-    fn key_min_size_values() {
-        assert_eq!(key_min_size(0), 0);
-        assert_eq!(key_min_size(1), 1);
-        assert_eq!(key_min_size(2), 2);
-        assert_eq!(key_min_size(3), 2);
-        assert_eq!(key_min_size(4), 3);
     }
 
     #[test]
@@ -298,7 +293,7 @@ mod tests {
     fn with_len() {
         // Vector length of epic proportions,
         // remains cheap as long as there is only one entry in the palette.
-        let epic_len = Key::MAX;
+        let epic_len = usize::MAX;
         let funi = "nyaa :3 mrrrrp mreow";
         let mut palvec: PalVec<String> = PalVec::with_len(String::from(funi), epic_len);
         assert_eq!(palvec.len(), epic_len);
@@ -316,7 +311,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn entry_count_too_big() {
-        let mut palvec: PalVec<()> = PalVec::with_len((), Key::MAX);
+        let mut palvec: PalVec<()> = PalVec::with_len((), usize::MAX);
         palvec.push(());
     }
 
