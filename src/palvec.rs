@@ -129,7 +129,7 @@ where
                 // SAFETY: 1 is not 0.
                 unsafe { NonZeroUsize::new_unchecked(1) }
             },
-            KeyAllocator {
+            &mut KeyAllocator {
                 key_vec: &mut self.key_vec,
                 reserved_key: None,
             },
@@ -156,7 +156,7 @@ where
                 // SAFETY: 1 is not 0.
                 unsafe { NonZeroUsize::new_unchecked(1) }
             },
-            KeyAllocator {
+            &mut KeyAllocator {
                 key_vec: &mut self.key_vec,
                 reserved_key: None,
             },

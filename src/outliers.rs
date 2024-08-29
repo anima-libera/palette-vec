@@ -9,9 +9,10 @@ use crate::{
     utils::view_to_owned::ViewToOwned,
 };
 
-pub struct OutPalVec<T>
+pub struct OutPalVec<T, I = OutlierMemoryRatioIntervalDefault>
 where
     T: Clone + Eq,
+    I: OutlierMemoryRatioInterval,
 {
     /// Instances of `outlier_key` are handled by the `index_to_opsk_map` and the `outlier_palette`
     /// and other keys are handled by `palette`.
@@ -24,11 +25,24 @@ where
     /// Exactly every instance of `outlier_key` in the `key_vec` has an entry here.
     index_to_opsk_map: FxHashMap<usize, Opsk>,
     _phantom: PhantomData<T>,
+    _phantom_interval: PhantomData<I>,
 }
 
-impl<T> OutPalVec<T>
+pub trait OutlierMemoryRatioInterval {
+    const INF: f32;
+    const SUP: f32;
+}
+
+pub struct OutlierMemoryRatioIntervalDefault;
+impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalDefault {
+    const INF: f32 = 0.013;
+    const SUP: f32 = 0.025;
+}
+
+impl<T, I> OutPalVec<T, I>
 where
     T: Clone + Eq,
+    I: OutlierMemoryRatioInterval,
 {
     pub fn new() -> Self {
         Self {
@@ -38,6 +52,7 @@ where
             outlier_palette: Palette::new(),
             index_to_opsk_map: FxHashMap::default(),
             _phantom: PhantomData,
+            _phantom_interval: PhantomData,
         }
     }
 
@@ -55,12 +70,17 @@ where
                 outlier_palette: Palette::new(),
                 index_to_opsk_map: FxHashMap::default(),
                 _phantom: PhantomData,
+                _phantom_interval: PhantomData,
             }
         }
     }
 
     pub fn len(&self) -> usize {
         self.key_vec.len()
+    }
+
+    pub fn outlier_instance_count(&self) -> usize {
+        self.index_to_opsk_map.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -119,32 +139,37 @@ where
 
         // Add new element.
         let key_of_element_to_add = if self.palette.contains(&element) {
+            // Already a common element.
             self.palette.add_element_instances(
                 element,
                 {
                     // SAFETY: 1 is not 0.
                     unsafe { NonZeroUsize::new_unchecked(1) }
                 },
-                KeyAllocator {
+                &mut KeyAllocator {
                     key_vec: &mut self.key_vec,
                     reserved_key: self.outlier_key,
                 },
             )
         } else {
+            // Either a new element or an already outlier element.
             let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
                 element,
                 {
                     // SAFETY: 1 is not 0.
                     unsafe { NonZeroUsize::new_unchecked(1) }
                 },
-                OpskAllocator,
+                &mut OpskAllocator,
             );
             let previous_entry = self.index_to_opsk_map.insert(index, opsk_of_element_to_add);
             if previous_entry.is_some() {
                 panic!("Bug: Index map entry was supposed to be unoccupied");
             }
             if self.outlier_key.is_none() {
-                let outlier_key = self.palette.smallest_unused_key();
+                let outlier_key = self.palette.smallest_available_key(&KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: self.outlier_key,
+                });
                 self.key_vec.make_sure_a_key_fits(outlier_key);
                 self.outlier_key = Some(outlier_key);
             }
@@ -157,6 +182,55 @@ where
             // SAFETY: We checked the bounds, we have `index < self.len()`,
             // and `add_element_instances` made sure that the key fits.
             unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
+        }
+    }
+
+    fn move_most_numerous_outlier_to_common(&mut self) {
+        let Some(opsk_to_move) = self.outlier_palette.key_of_most_instanced_element() else {
+            return;
+        };
+        let palette_entry = self
+            .outlier_palette
+            .remove_entry(opsk_to_move)
+            .expect("Bug: We just got this opsk for the outlier palette");
+        if self.outlier_palette.len() == 0 {
+            // There are no outliers anymore, we can make the outlier key available.
+            self.outlier_key = None;
+        }
+        let new_key = self.palette.add_entry(
+            palette_entry,
+            &mut KeyAllocator {
+                key_vec: &mut self.key_vec,
+                reserved_key: self.outlier_key,
+            },
+        );
+        self.index_to_opsk_map.retain(|index, opsk| {
+            let remove = *opsk == opsk_to_move;
+            if remove {
+                self.key_vec.set(*index, new_key);
+            }
+            !remove
+        });
+    }
+
+    fn outlier_ratio(&self) -> Option<f32> {
+        let len = self.len();
+        (len != 0).then(|| {
+            let outlier_instance_count = self.outlier_instance_count();
+            outlier_instance_count as f32 / len as f32
+        })
+    }
+
+    fn enforce_upper_limit_on_outlier_ratio(&mut self) {
+        loop {
+            let Some(outlier_ratio) = self.outlier_ratio() else {
+                return;
+            };
+            if outlier_ratio <= I::SUP {
+                // All is good.
+                break;
+            }
+            self.move_most_numerous_outlier_to_common();
         }
     }
 }
@@ -172,10 +246,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::borrowed_or_owned::{
-        OptionBorrowedOrOwnedAsRef, OptionBorrowedOrOwnedCopied,
-    };
-
     use super::*;
 
     #[test]
@@ -205,5 +275,41 @@ mod tests {
         assert_eq!(palvec.get(11), Some(&1));
         assert_eq!(palvec.get(12), Some(&1));
         assert_eq!(palvec.get(13), Some(&2));
+    }
+
+    #[test]
+    fn move_outliers_to_common() {
+        pub struct OutlierMemoryRatioIntervalTest;
+        impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalTest {
+            const INF: f32 = 0.010;
+            const SUP: f32 = 0.030;
+        }
+        let mut palvec: OutPalVec<String, OutlierMemoryRatioIntervalTest> =
+            OutPalVec::with_len("common".to_string(), 1000);
+        for i in 0..100 {
+            palvec.set(i, format!("{}", i));
+        }
+        for i in 100..200 {
+            palvec.set(i, "uwu");
+        }
+        // 100 all different outliers, and 100 other identical outliers
+        assert_eq!(palvec.outlier_instance_count(), 200);
+        palvec.move_most_numerous_outlier_to_common();
+        assert_eq!(palvec.outlier_instance_count(), 100);
+        palvec.move_most_numerous_outlier_to_common();
+        assert_eq!(palvec.outlier_instance_count(), 99);
+        palvec.move_most_numerous_outlier_to_common();
+        assert_eq!(palvec.outlier_instance_count(), 98);
+        palvec.enforce_upper_limit_on_outlier_ratio();
+        assert_eq!(palvec.outlier_instance_count(), 30);
+        for i in 0..100 {
+            assert_eq!(palvec.get(i), Some(&format!("{}", i)));
+        }
+        for i in 100..200 {
+            assert_eq!(palvec.get(i).as_ref().map(|s| s.as_str()), Some("uwu"));
+        }
+        for i in 200..1000 {
+            assert_eq!(palvec.get(i).as_ref().map(|s| s.as_str()), Some("common"));
+        }
     }
 }

@@ -12,6 +12,15 @@ pub(crate) struct PaletteEntry<T> {
     element: MaybeUninit<T>,
 }
 
+impl<T> Default for PaletteEntry<T> {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            element: MaybeUninit::uninit(),
+        }
+    }
+}
+
 pub(crate) struct Palette<T, K>
 where
     T: Clone + Eq,
@@ -57,18 +66,25 @@ where
             .count()
     }
 
-    pub(crate) fn smallest_unused_key(&self) -> K {
-        K::with_value(
-            self.vec
-                .iter()
-                .enumerate()
-                .find_map(|(key, palette_entry)| (palette_entry.count == 0).then_some(key))
-                .unwrap_or(self.vec.len()),
-        )
+    pub(crate) fn smallest_available_key(&self, key_allocator: &impl PaletteKeyAllocator<K>) -> K {
+        for key_value in 0.. {
+            let key = K::with_value(key_value);
+            if let Some(palette_entry) = self.vec.get(key_value) {
+                if palette_entry.count == 0 && key_allocator.can_allocate(key) {
+                    return key;
+                }
+            } else if key_allocator.can_allocate(key) {
+                return key;
+            }
+        }
+        unreachable!()
     }
 
-    fn allocate_key(&self, key_allocator: impl PaletteKeyAllocator<K>) -> K {
-        let allocated_key = self.smallest_unused_key();
+    fn allocate_smallest_available_key(
+        &self,
+        key_allocator: &mut impl PaletteKeyAllocator<K>,
+    ) -> K {
+        let allocated_key = self.smallest_available_key(key_allocator);
         key_allocator.palette_allocate(allocated_key);
         allocated_key
     }
@@ -89,7 +105,7 @@ where
         &mut self,
         element: impl ViewToOwned<T>,
         that_many: NonZeroUsize,
-        key_allocator: impl PaletteKeyAllocator<K>,
+        key_allocator: &mut impl PaletteKeyAllocator<K>,
     ) -> K {
         let already_in_palette =
             self.vec
@@ -113,13 +129,10 @@ where
                 .expect("Palette entry count overflow (max is usize::MAX)");
             K::with_value(key_value)
         } else {
-            let key = self.allocate_key(key_allocator);
+            let key = self.allocate_smallest_available_key(key_allocator);
             // Making sure that `vec.len()` is at least `key + 1`.
             if self.vec.len() <= key.value() {
-                self.vec.resize_with(key.value() + 1, || PaletteEntry {
-                    count: 0,
-                    element: MaybeUninit::uninit(),
-                });
+                self.vec.resize_with(key.value() + 1, PaletteEntry::default);
             }
             let palette_entry = {
                 // SAFETY: We just made sure that `vec.len()` is at least `key + 1`,
@@ -219,5 +232,38 @@ where
             .filter_map(|(key_value, palette_entry)| {
                 (0 < palette_entry.count).then_some(K::with_value(key_value))
             })
+    }
+
+    pub(crate) fn key_of_most_instanced_element(&self) -> Option<K> {
+        self.vec
+            .iter()
+            .enumerate()
+            .max_by_key(|(_key_value, palette_entry)| palette_entry.count)
+            .and_then(|(key_value, palette_entry)| {
+                (0 < palette_entry.count).then_some(K::with_value(key_value))
+            })
+    }
+
+    pub(crate) fn remove_entry(&mut self, key: K) -> Option<PaletteEntry<T>> {
+        Some(std::mem::take(self.vec.get_mut(key.value())?))
+    }
+
+    pub(crate) fn add_entry(
+        &mut self,
+        palette_entry: PaletteEntry<T>,
+        key_allocator: &mut impl PaletteKeyAllocator<K>,
+    ) -> K {
+        let key = self.allocate_smallest_available_key(key_allocator);
+        // Making sure that `vec.len()` is at least `key + 1`.
+        if self.vec.len() <= key.value() {
+            self.vec.resize_with(key.value() + 1, PaletteEntry::default);
+        }
+        let palette_entry_to_overwrite = {
+            // SAFETY: We just made sure that `vec.len()` is at least `key + 1`,
+            // so we cannot be out-of-bounds here.
+            unsafe { self.vec.get_mut(key.value()).unwrap_unchecked() }
+        };
+        *palette_entry_to_overwrite = palette_entry;
+        key
     }
 }

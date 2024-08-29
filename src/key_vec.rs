@@ -12,7 +12,7 @@ use crate::key::{Key, PaletteKeyType};
 /// without padding between keys (so they are probably not byte-aligned).
 ///
 /// Supports a `keys_size` of zero, which doesn't allocate and only support the key value `0`.
-pub struct KeyVec {
+pub(crate) struct KeyVec {
     /// The size in bits of the memory representation of each key in `vec_or_len.vec`.
     ///
     /// It is always less-than-or-equal-to `Key`'s size in bits.
@@ -165,7 +165,7 @@ impl KeyVec {
     ///
     /// Panics if `index` is out of bounds.
     /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
-    pub(crate) fn _set(&mut self, index: usize, key: Key) {
+    pub(crate) fn set(&mut self, index: usize, key: Key) {
         if index < self.len() {
             let key_min_size = key.min_size();
             if key_min_size <= self.keys_size {
