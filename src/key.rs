@@ -60,15 +60,26 @@ impl PaletteKeyType for Opsk {
 /// When a palette allocates a new key, a part of the allocation work cannot be done by the palette
 /// and is done instead by a type that implements this trait.
 pub(crate) trait PaletteKeyAllocator<K> {
+    fn can_allocate(self, key: K) -> bool;
     fn palette_allocate(self, key: K);
 }
 
-/// Used when allocating a `Key`. Makes sure the `KeyVec` can contain the allocated key.
+/// Used when allocating a `Key`.
+///
+/// Makes sure the `KeyVec` can contain the allocated key.
+///
+/// Also disallow the allocation of a reserved key, used as the outlier key by the `OutPalVec`.
 pub(crate) struct KeyAllocator<'a> {
     pub(crate) key_vec: &'a mut KeyVec,
+    pub(crate) reserved_key: Option<Key>,
 }
 
 impl<'a> PaletteKeyAllocator<Key> for KeyAllocator<'a> {
+    #[inline]
+    fn can_allocate(self, key: Key) -> bool {
+        !(Some(key) == self.reserved_key)
+    }
+
     #[inline]
     fn palette_allocate(self, key: Key) {
         self.key_vec.make_sure_a_key_fits(key);
@@ -79,6 +90,11 @@ impl<'a> PaletteKeyAllocator<Key> for KeyAllocator<'a> {
 pub(crate) struct OpskAllocator;
 
 impl PaletteKeyAllocator<Opsk> for OpskAllocator {
+    #[inline]
+    fn can_allocate(self, _key: Opsk) -> bool {
+        true
+    }
+
     #[inline]
     fn palette_allocate(self, _key: Opsk) {}
 }

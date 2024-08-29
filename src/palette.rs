@@ -57,14 +57,18 @@ where
             .count()
     }
 
-    fn allocate_key(&self, key_allocator: impl PaletteKeyAllocator<K>) -> K {
-        let allocated_key = K::with_value(
+    pub(crate) fn smallest_unused_key(&self) -> K {
+        K::with_value(
             self.vec
                 .iter()
                 .enumerate()
                 .find_map(|(key, palette_entry)| (palette_entry.count == 0).then_some(key))
                 .unwrap_or(self.vec.len()),
-        );
+        )
+    }
+
+    fn allocate_key(&self, key_allocator: impl PaletteKeyAllocator<K>) -> K {
+        let allocated_key = self.smallest_unused_key();
         key_allocator.palette_allocate(allocated_key);
         allocated_key
     }
@@ -194,7 +198,7 @@ where
     /// Returns `true` if the palette contains the given element.
     ///
     /// This operation is *O*(*len*).
-    pub(crate) fn contains(&self, element: impl ViewToOwned<T>) -> bool {
+    pub(crate) fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
         self.vec.iter().any(|palette_entry| {
             0 < palette_entry.count
                 && ({

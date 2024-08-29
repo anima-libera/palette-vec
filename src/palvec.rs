@@ -131,6 +131,7 @@ where
             },
             KeyAllocator {
                 key_vec: &mut self.key_vec,
+                reserved_key: None,
             },
         );
         if self.key_vec.keys_size() == 0 {
@@ -157,6 +158,7 @@ where
             },
             KeyAllocator {
                 key_vec: &mut self.key_vec,
+                reserved_key: None,
             },
         );
         self.key_vec.push(key);
@@ -186,7 +188,7 @@ where
     /// Returns `true` if the palette contains the given element.
     ///
     /// This operation is *O*(*palette_len*).
-    pub fn palette_contains(&self, element: impl ViewToOwned<T>) -> bool {
+    pub fn palette_contains(&self, element: &impl ViewToOwned<T>) -> bool {
         self.palette.contains(element)
     }
 }
@@ -320,8 +322,8 @@ mod tests {
         let mut palvec: PalVec<i32> = PalVec::new();
         palvec.push(8);
         palvec.push(5);
-        assert!(palvec.palette.contains(8));
-        assert!(palvec.palette.contains(5));
+        assert!(palvec.palette.contains(&8));
+        assert!(palvec.palette.contains(&5));
     }
 
     #[test]
@@ -331,8 +333,8 @@ mod tests {
         palvec.push(5);
         palvec.pop();
         palvec.pop();
-        assert!(!palvec.palette.contains(8));
-        assert!(!palvec.palette.contains(5));
+        assert!(!palvec.palette.contains(&8));
+        assert!(!palvec.palette.contains(&5));
     }
 
     #[test]
@@ -343,9 +345,9 @@ mod tests {
         }
         for i in (0..50).rev() {
             dbg!(i);
-            assert!(palvec.palette.contains(i));
+            assert!(palvec.palette.contains(&i));
             assert_eq!(palvec.pop().map_copied(), Some(i));
-            assert!(!palvec.palette.contains(i));
+            assert!(!palvec.palette.contains(&i));
         }
     }
 
@@ -358,9 +360,9 @@ mod tests {
             }
             for j in (0..i).rev() {
                 dbg!(palvec.len());
-                assert!(palvec.palette.contains(j));
+                assert!(palvec.palette.contains(&j));
                 assert_eq!(palvec.pop().map_copied(), Some(j));
-                assert!(!palvec.palette.contains(j));
+                assert!(!palvec.palette.contains(&j));
             }
         }
     }
