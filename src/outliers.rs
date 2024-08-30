@@ -183,6 +183,8 @@ where
             // and `add_element_instances` made sure that the key fits.
             unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
         }
+
+        self.enforce_upper_limit_on_outlier_ratio();
     }
 
     fn move_most_numerous_outlier_to_common(&mut self) {
@@ -278,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn move_outliers_to_common() {
+    fn outlier_ratio_upper_limit() {
         pub struct OutlierMemoryRatioIntervalTest;
         impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalTest {
             const INF: f32 = 0.010;
@@ -292,15 +294,8 @@ mod tests {
         for i in 100..200 {
             palvec.set(i, "uwu");
         }
-        // 100 all different outliers, and 100 other identical outliers
-        assert_eq!(palvec.outlier_instance_count(), 200);
-        palvec.move_most_numerous_outlier_to_common();
-        assert_eq!(palvec.outlier_instance_count(), 100);
-        palvec.move_most_numerous_outlier_to_common();
-        assert_eq!(palvec.outlier_instance_count(), 99);
-        palvec.move_most_numerous_outlier_to_common();
-        assert_eq!(palvec.outlier_instance_count(), 98);
-        palvec.enforce_upper_limit_on_outlier_ratio();
+        // 100 all different outliers, and 100 other identical outliers, so 200 outliers
+        // but the `OutlierMemoryRatioInterval::SUP` upper ratio limit is enforced
         assert_eq!(palvec.outlier_instance_count(), 30);
         for i in 0..100 {
             assert_eq!(palvec.get(i), Some(&format!("{}", i)));
