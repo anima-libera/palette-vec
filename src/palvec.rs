@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
+use std::ops::Index;
 
 use crate::key::{Key, KeyAllocator, PaletteKeyType};
 use crate::key_vec::KeyVec;
@@ -202,6 +203,21 @@ where
     }
 }
 
+impl<T> Index<usize> for PalVec<T>
+where
+    T: Clone + Eq,
+{
+    type Output = T;
+    fn index(&self, index: usize) -> &Self::Output {
+        match self.get(index) {
+            Some(element) => element,
+            None => {
+                panic!("index (is {index}) should be < len (is {})", self.len());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::utils::borrowed_or_owned::{
@@ -365,5 +381,14 @@ mod tests {
                 assert!(!palvec.palette.contains(&j));
             }
         }
+    }
+
+    #[test]
+    fn single_index() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        palvec.push(8);
+        palvec.push(5);
+        assert_eq!(palvec[0], 8);
+        assert_eq!(palvec[1], 5);
     }
 }

@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, num::NonZeroUsize};
+use std::{marker::PhantomData, num::NonZeroUsize, ops::Index};
 
 use fxhash::FxHashMap;
 
@@ -7,8 +7,10 @@ use crate::{
     key_vec::KeyVec,
     palette::Palette,
     utils::view_to_owned::ViewToOwned,
+    BorrowedOrOwned,
 };
 
+// TODO: Better doc!
 pub struct OutPalVec<T, I = OutlierMemoryRatioIntervalDefault>
 where
     T: Clone + Eq,
@@ -193,6 +195,78 @@ where
         self.enforce_upper_limit_on_outlier_ratio();
     }
 
+    pub fn push(&mut self, element: impl ViewToOwned<T>) {
+        // TODO: Factorize the duplicated code with `set`, there is a lot of it.
+
+        let key_of_element_to_add = if self.palette.contains(&element) {
+            // Already a common element.
+            self.palette.add_element_instances(
+                element,
+                {
+                    // SAFETY: 1 is not 0.
+                    unsafe { NonZeroUsize::new_unchecked(1) }
+                },
+                &mut KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: self.outlier_key,
+                },
+            )
+        } else {
+            // Either a new element or an already outlier element.
+            let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
+                element,
+                {
+                    // SAFETY: 1 is not 0.
+                    unsafe { NonZeroUsize::new_unchecked(1) }
+                },
+                &mut OpskAllocator,
+            );
+            let previous_entry = self
+                .index_to_opsk_map
+                .insert(self.key_vec.len(), opsk_of_element_to_add);
+            if previous_entry.is_some() {
+                panic!("Bug: Index map entry was supposed to be unoccupied");
+            }
+            if self.outlier_key.is_none() {
+                let outlier_key = self.palette.smallest_available_key(&KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: self.outlier_key,
+                });
+                self.key_vec.make_sure_a_key_fits(outlier_key);
+                self.outlier_key = Some(outlier_key);
+            }
+            self.outlier_key.unwrap()
+        };
+
+        self.key_vec.push(key_of_element_to_add);
+
+        self.enforce_upper_limit_on_outlier_ratio();
+    }
+
+    pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, T>> {
+        // TODO: Is there too much duplicated code with `set`?
+
+        self.key_vec.pop().map(|key_of_elemement_to_remove| {
+            if Some(key_of_elemement_to_remove) == self.outlier_key {
+                let opsk_of_elemement_to_remove = self
+                    .index_to_opsk_map
+                    .remove(&self.key_vec.len())
+                    .expect("Bug: Outlier key in `key_vec` but index not in index map");
+                self.outlier_palette
+                    .remove_element_instances(opsk_of_elemement_to_remove, {
+                        // SAFETY: 1 is not 0.
+                        unsafe { NonZeroUsize::new_unchecked(1) }
+                    })
+            } else {
+                self.palette
+                    .remove_element_instances(key_of_elemement_to_remove, {
+                        // SAFETY: 1 is not 0.
+                        unsafe { NonZeroUsize::new_unchecked(1) }
+                    })
+            }
+        })
+    }
+
     fn move_most_numerous_outlier_to_common(&mut self) {
         let Some(opsk_to_move) = self.outlier_palette.key_of_most_instanced_element() else {
             return;
@@ -252,8 +326,25 @@ where
     }
 }
 
+impl<T> Index<usize> for OutPalVec<T>
+where
+    T: Clone + Eq,
+{
+    type Output = T;
+    fn index(&self, index: usize) -> &Self::Output {
+        match self.get(index) {
+            Some(element) => element,
+            None => {
+                panic!("index (is {index}) should be < len (is {})", self.len());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::{OptionBorrowedOrOwnedAsRef, OptionBorrowedOrOwnedCopied};
+
     use super::*;
 
     #[test]
@@ -261,6 +352,69 @@ mod tests {
         let palvec: OutPalVec<()> = OutPalVec::new();
         assert!(palvec.is_empty());
         assert_eq!(palvec.len(), 0);
+    }
+
+    #[test]
+    fn push_and_len() {
+        let mut palvec: OutPalVec<()> = OutPalVec::new();
+        assert_eq!(palvec.len(), 0);
+        palvec.push(());
+        assert_eq!(palvec.len(), 1);
+        palvec.push(());
+        assert_eq!(palvec.len(), 2);
+    }
+
+    #[test]
+    fn push_and_get() {
+        let mut palvec: OutPalVec<i32> = OutPalVec::new();
+        palvec.push(42);
+        assert_eq!(palvec.get(0), Some(&42));
+    }
+
+    #[test]
+    fn get_out_of_bounds_is_none() {
+        let mut palvec: OutPalVec<()> = OutPalVec::new();
+        assert!(palvec.get(0).is_none());
+        palvec.push(());
+        palvec.push(());
+        assert!(palvec.get(0).is_some());
+        assert!(palvec.get(1).is_some());
+        assert!(palvec.get(2).is_none());
+    }
+
+    #[test]
+    fn pop_empty() {
+        let mut palvec: OutPalVec<()> = OutPalVec::new();
+        assert_eq!(palvec.pop().map_as_ref(), None);
+    }
+
+    #[test]
+    fn push_and_pop_strings() {
+        let mut palvec: OutPalVec<String> = OutPalVec::new();
+        palvec.push("uwu");
+        palvec.push(String::from("owo"));
+        assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("owo"));
+        assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("uwu"));
+        assert_eq!(palvec.pop().map_as_ref(), None);
+    }
+
+    #[test]
+    fn push_and_pop_numbers() {
+        let mut palvec: OutPalVec<i32> = OutPalVec::new();
+        palvec.push(8);
+        palvec.push(5);
+        assert_eq!(palvec.pop().map_copied(), Some(5));
+        assert_eq!(palvec.pop().map_copied(), Some(8));
+        assert_eq!(palvec.pop().map_as_ref(), None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_out_of_bounds_panic() {
+        let mut palvec: OutPalVec<()> = OutPalVec::new();
+        palvec.push(());
+        palvec.push(());
+        palvec.set(2, ());
     }
 
     #[test]
@@ -312,5 +466,14 @@ mod tests {
         for i in 200..1000 {
             assert_eq!(palvec.get(i).as_ref().map(|s| s.as_str()), Some("common"));
         }
+    }
+
+    #[test]
+    fn single_index() {
+        let mut palvec: OutPalVec<i32> = OutPalVec::new();
+        palvec.push(8);
+        palvec.push(5);
+        assert_eq!(palvec[0], 8);
+        assert_eq!(palvec[1], 5);
     }
 }
