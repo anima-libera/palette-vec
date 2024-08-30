@@ -1,11 +1,76 @@
-- Add an (opt-in) type parameter on `PalVec` that enables an other optimization:
-  - a small index->(uncompressed key into a second palette) map that is checked before accessing via the `palette[keyvec[index]]` method.
-  - so access is now `second_palette[small_map[index]].unwarp_or_else(palette[keyvec[index]])`.
-  - the small map is kept small because most accesses will miss so failed searches through it (worst case access) cost will be added to almost all accesses to the PalVec.
-  - when its size reaches the threshold, the second palette entry with the higest number of instances in the small map is moved to the classic palette and its keyvec.
-  - this memory-usage optimization works better when the palette entries that have few instances are in the second palette (because it reduces the pressure of the small map (and the cost of searching through it) while having the same effect on the reduction of the key_size of the classic palette), so work should be done to make sure that it tends to be as such.
-- Add methods to shrink key_vec length size, or key_size (with and without defragmenting key values allocations to map all key used to smaller values when possible).
-- Implement indexing traits.
-- Allow indexing with ranges and return slices (customn view types into a range of the `PalVec`).
-- More Vec-like methods.
-- More tests !!!
+
+-----------------------------
+
+# Features
+
+## Implement nice traits
+(look at std `Vec` and `HashMap` to get inspiration for nice combinations of type parameters and `Self` as reference or not)
+- `Clone`, `Debug`, `Default`, `PartialEq`, `Eq`
+- `Index` (for one index but also ranges)
+- `Extend`, `FromIterator`, `IntoIterator`, `From` (like from `Vec<T>`, `[T]` and the likes)
+
+## Implement nice methods
+(look at std `Vec` and `HashMap` to get inspiration)
+- `with_len_and_palette_len` (which preallocates the palette and starts with the good keys size)
+- `with_capacity`, `capacity`, `reserve`
+- unsafe unstable `into_raw_parts` and `from_raw_parts`
+- get number of instances of an element
+- is an element an outlier or a common element
+- get iterators over various combinations of palette data
+- insert and remove values at arbitrary indices
+- `concat`, `reverse`
+- `fill`, `fill_with`, `clone_from_slice` (and `copy_from_slice`)
+- `copy_within`, `swap`, `swap` but a range with a range, unsafe `swap_unchecked`
+- unsafe `get_unchecked`
+- unsafe `get_mut` (unsafe because it impacts all instances, also what if it becomes equaly to an other palette entry) and `get_mut_unchecked`
+- `iter`, `windows`, `chunks`
+- `drain`
+- `clear`
+
+## Add PalVecSlice and OutPalVecSlice types
+They would be views into a range (that can be `..`) of an owned PalVec.
+
+## Allow for multiple PalVecs to share a single palette (or not?)
+Maybee... This would be tricky to make it work safely without a super annoying API, and also the use cases seem even more niche than palette compression...
+
+## Tests
+Test everything, stress test everything, with all the types and settings.
+
+## Benchmarks
+Make benchmarks of performance and memory usage of Vec, PalVec and OutPalVec in various stress tests.
+
+## Documentation and examples
+- Explain the usecases of palette compression, large arrays of few different values that would even be potentially big, and in practice: chunks of a 3D/4D voxel world (Minecraft does it), large voxel scenes, chunks of a 2D powder game with a large map, the large grid of a 2D/3D celular automata, some other specific needs (such as a large ordered list of words/whatever that should be read and written fast but without much insertion/removals), etc.
+- Explain why the outliers optimization is so cool, with the example of voxel game chunks (lots of air, stone, dirt, grass, and very few very diverse other kinds of blocks like torches, flowers, chests, etc. that could all be sorted into one outlier key to reduce the size of keys in the key vec).
+- Explain how the outliers optimization works, with figures and everything.
+- Document every single public type and method and module and everything (extensively when necessary).
+
+-----------------------------
+
+# Optimisations and optimization-related features
+
+## Reverse hash map (BAD, see "Fast adders" instead!)
+When `get` or `pop` are called, we look the key at a given index and then index the palette with the key we got, index the palette with a key is fast. However, when `set` or `push` are called, we *index the palette with a given element* to look for the key associated with the element, and this is slow. We have to iterate over all the palette (at worst) and perform equality checks between pairs of elements multiple times which may be expensive for what we know.
+What if we could have a sort of reverse hash map (if the element type is hashable) where we can lookup the key associated to a given element fast too? This would reduce the time spent iterating over the palette, but also potentially reduce the equality checks (as we mainly compare hashes). (Yeah this is literally a hash map vs a key-value unsorted vector.)
+This would add memory usage on the palette, but make performances better for writing to a PalVec.
+
+## Fast adders
+Instead of a reverse hash map, what if:
+Statically opt-in feature that allows to get "adders" for elements. An adder corresponds to an element and knows its key (in the PalVec it is bound to). When using `set` or `push` to add an element for which we have an adder, then we can use the adder's knowledge of the element's key to find it immediately in the palette which makes it fast (instead of the slow way of iterating thorugh the palette and checking for equality with each palette entry element). We have to make sure that the adder's key is updated (or at least invalidated) when the element's key changes.
+
+## Index map
+Provide an alternative to the HashMap for the index map of OutPalVec. Something like a sorted vec of small (index, opsk) pairs (small as in, we can use u32 or even u16 for these if the KeyVec and outlier palette are small enough), it would be tricky to make it fast to access and modify but it would enable epic memory usage optimizations:
+- Smaller memory usage of the index map itself.
+- Knowing exactly the memory usage of the index map allows to think in terms of memory usage when considering to move palette entries around the outlier and common palettes. We can take decisions that are literally the best memory usage reducing decisions instead of decisions based on some half-guessed heuristics on the number of outliers and all (due to the memory usage of an hashmap index map being mysterious).
+
+## Shrinking
+Add methods to shrink the allocations and use smaller keys to reduce memory usage.
+
+## Constant length
+Add a way to tell a PalVec that it has a given length and this is it. The KeyVec can still have maybe one or two keys size growth loads of additional capacity ready in case the keys size increases, but then it must be exactly a multiple (or else there is memory that is just wasted, which doesn't serve any purpose) because the length will not change. This constant-length-property could be a type parameter (that doesn't contain the length, that can still be decided at runtime with the `with_len` constructor).
+
+## More unsafe
+Remove redundant checks, put parameter requirements and reassuring checks in `debug_assert!`s.
+
+## Simd?
+Would it even be usable on our non-bit-aligned keys?

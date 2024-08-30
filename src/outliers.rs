@@ -23,20 +23,26 @@ where
     outlier_key: Option<Key>,
     outlier_palette: Palette<T, Opsk>,
     /// Exactly every instance of `outlier_key` in the `key_vec` has an entry here.
+    ///
+    /// TODO: Maybe provide an alternative to the hash map, like a sorted vec. This would
+    /// allow to really get its memory usage smaller, and also to know its memory usage
+    /// with precision, which enables the best possible memory usage optimization for this whole
+    /// thing as we could think in terms of smaller memory usage to decide when to move elements
+    /// between the outlier and common palettes.
     index_to_opsk_map: FxHashMap<usize, Opsk>,
     _phantom: PhantomData<T>,
     _phantom_interval: PhantomData<I>,
 }
 
 pub trait OutlierMemoryRatioInterval {
-    const INF: f32;
-    const SUP: f32;
+    const LOWER_LIMIT_WEAK: f32;
+    const UPPER_LIMIT: f32;
 }
 
 pub struct OutlierMemoryRatioIntervalDefault;
 impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalDefault {
-    const INF: f32 = 0.013;
-    const SUP: f32 = 0.025;
+    const LOWER_LIMIT_WEAK: f32 = 0.013;
+    const UPPER_LIMIT: f32 = 0.025;
 }
 
 impl<T, I> OutPalVec<T, I>
@@ -228,7 +234,7 @@ where
             let Some(outlier_ratio) = self.outlier_ratio() else {
                 return;
             };
-            if outlier_ratio <= I::SUP {
+            if outlier_ratio <= I::UPPER_LIMIT {
                 // All is good.
                 break;
             }
@@ -283,8 +289,8 @@ mod tests {
     fn outlier_ratio_upper_limit() {
         pub struct OutlierMemoryRatioIntervalTest;
         impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalTest {
-            const INF: f32 = 0.010;
-            const SUP: f32 = 0.030;
+            const LOWER_LIMIT_WEAK: f32 = 0.010;
+            const UPPER_LIMIT: f32 = 0.030;
         }
         let mut palvec: OutPalVec<String, OutlierMemoryRatioIntervalTest> =
             OutPalVec::with_len("common".to_string(), 1000);
