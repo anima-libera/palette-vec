@@ -19,8 +19,7 @@ where
     /// Instances of `outlier_key` are handled by the `index_to_opsk_map` and the `outlier_palette`
     /// and other keys are handled by `palette`.
     key_vec: KeyVec,
-    /// Contains at most one `OutlierPalette`.
-    palette: Palette<T, Key>,
+    common_palette: Palette<T, Key>,
     /// Is `None` iff the `outlier_palette` is empty.
     outlier_key: Option<Key>,
     outlier_palette: Palette<T, Opsk>,
@@ -55,7 +54,7 @@ where
     pub fn new() -> Self {
         Self {
             key_vec: KeyVec::new(),
-            palette: Palette::new(),
+            common_palette: Palette::new(),
             outlier_key: None,
             outlier_palette: Palette::new(),
             index_to_opsk_map: FxHashMap::default(),
@@ -73,7 +72,7 @@ where
             // so it matches.
             Self {
                 key_vec: KeyVec::with_len(len),
-                palette: Palette::with_one_entry(element, len),
+                common_palette: Palette::with_one_entry(element, len),
                 outlier_key: None,
                 outlier_palette: Palette::new(),
                 index_to_opsk_map: FxHashMap::default(),
@@ -106,7 +105,7 @@ where
                 .get(opsk)
                 .expect("Bug: Opsk in index map is not used by the palette")
         } else {
-            self.palette
+            self.common_palette
                 .get(key)
                 .expect("Bug: Key used in `key_vec` is not used by the palette")
         })
@@ -120,12 +119,8 @@ where
 
         // Remove previous element.
         let key_of_elemement_to_remove = {
-            if self.key_vec.keys_size() == 0 {
-                Key::with_value(0)
-            } else {
-                // SAFETY: We checked the bounds, we have `index < self.len()`.
-                unsafe { self.key_vec.get_unchecked(index) }
-            }
+            // SAFETY: We checked the bounds, we have `index < self.len()`.
+            unsafe { self.key_vec.get_unchecked(index) }
         };
         if Some(key_of_elemement_to_remove) == self.outlier_key {
             let opsk_of_elemement_to_remove = self
@@ -138,7 +133,7 @@ where
                     unsafe { NonZeroUsize::new_unchecked(1) }
                 });
         } else {
-            self.palette
+            self.common_palette
                 .remove_element_instances(key_of_elemement_to_remove, {
                     // SAFETY: 1 is not 0.
                     unsafe { NonZeroUsize::new_unchecked(1) }
@@ -146,9 +141,9 @@ where
         }
 
         // Add new element.
-        let key_of_element_to_add = if self.palette.contains(&element) {
+        let key_of_element_to_add = if self.common_palette.contains(&element) {
             // Already a common element.
-            self.palette.add_element_instances(
+            self.common_palette.add_element_instances(
                 element,
                 {
                     // SAFETY: 1 is not 0.
@@ -174,7 +169,7 @@ where
                 panic!("Bug: Index map entry was supposed to be unoccupied");
             }
             if self.outlier_key.is_none() {
-                let outlier_key = self.palette.smallest_available_key(&KeyAllocator {
+                let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
                     key_vec: &mut self.key_vec,
                     reserved_key: self.outlier_key,
                 });
@@ -183,14 +178,10 @@ where
             }
             self.outlier_key.unwrap()
         };
-        if self.key_vec.keys_size() == 0 {
-            // Nothing to do here, all the keys have the same value of zero.
-            debug_assert_eq!(key_of_element_to_add, Key::with_value(0));
-        } else {
-            // SAFETY: We checked the bounds, we have `index < self.len()`,
-            // and `add_element_instances` made sure that the key fits.
-            unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
-        }
+
+        // SAFETY: We checked the bounds so we have `index < self.len()`,
+        // and `KeyAllocator` made sure that the key fits.
+        unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
 
         self.enforce_upper_limit_on_outlier_ratio();
     }
@@ -198,9 +189,9 @@ where
     pub fn push(&mut self, element: impl ViewToOwned<T>) {
         // TODO: Factorize the duplicated code with `set`, there is a lot of it.
 
-        let key_of_element_to_add = if self.palette.contains(&element) {
+        let key_of_element_to_add = if self.common_palette.contains(&element) {
             // Already a common element.
-            self.palette.add_element_instances(
+            self.common_palette.add_element_instances(
                 element,
                 {
                     // SAFETY: 1 is not 0.
@@ -228,7 +219,7 @@ where
                 panic!("Bug: Index map entry was supposed to be unoccupied");
             }
             if self.outlier_key.is_none() {
-                let outlier_key = self.palette.smallest_available_key(&KeyAllocator {
+                let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
                     key_vec: &mut self.key_vec,
                     reserved_key: self.outlier_key,
                 });
@@ -238,7 +229,8 @@ where
             self.outlier_key.unwrap()
         };
 
-        self.key_vec.push(key_of_element_to_add);
+        // SAFETY: `KeyAllocator` made sure that the key fits.
+        unsafe { self.key_vec.push_unchecked(key_of_element_to_add) }
 
         self.enforce_upper_limit_on_outlier_ratio();
     }
@@ -258,7 +250,7 @@ where
                         unsafe { NonZeroUsize::new_unchecked(1) }
                     })
             } else {
-                self.palette
+                self.common_palette
                     .remove_element_instances(key_of_elemement_to_remove, {
                         // SAFETY: 1 is not 0.
                         unsafe { NonZeroUsize::new_unchecked(1) }
@@ -279,7 +271,7 @@ where
             // There are no outliers anymore, we can make the outlier key available.
             self.outlier_key = None;
         }
-        let new_key = self.palette.add_entry(
+        let new_key = self.common_palette.add_entry(
             palette_entry,
             &mut KeyAllocator {
                 key_vec: &mut self.key_vec,

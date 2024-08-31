@@ -147,15 +147,29 @@ impl KeyVec {
     /// Returns the key at the given `index`, or None if out of bounds.
     pub(crate) fn get(&self, index: usize) -> Option<Key> {
         if index < self.len() {
-            Some(if self.keys_size == 0 {
-                // Only possible key value when `keys_size` is zero.
-                Key::with_value(0)
-            } else {
-                // SAFETY: `keys_size` is non-zero, and `index < self.len()`.
+            Some({
+                // SAFETY: `index < self.len()`.
                 unsafe { self.get_unchecked(index) }
             })
         } else {
             None
+        }
+    }
+
+    /// Returns the key at the given index in the `KeyVec`.
+    ///
+    /// # Safety
+    ///
+    /// `index` must be `< self.len()`.
+    pub(crate) unsafe fn get_unchecked(&self, index: usize) -> Key {
+        debug_assert!(index <= self.len());
+        if self.keys_size == 0 {
+            // Only possible key value when `keys_size` is zero.
+            Key::with_value(0)
+        } else {
+            let bit_range = Self::key_bit_range(self.keys_size, index);
+            debug_assert!(bit_range.end <= self.vec_or_len.vec.len());
+            Key::with_value(self.vec_or_len.vec[bit_range].load())
         }
     }
 
@@ -169,13 +183,8 @@ impl KeyVec {
         if index < self.len() {
             let key_min_size = key.min_size();
             if key_min_size <= self.keys_size {
-                if self.keys_size == 0 {
-                    // Nothing to do, `key` is zero since `key_min_size(key) == 0`.
-                    debug_assert_eq!(key, Key::with_value(0));
-                } else {
-                    // SAFETY: We just checked all the conditions.
-                    unsafe { self.set_unchecked(index, key) }
-                }
+                // SAFETY: The index is in bounds and the key fits.
+                unsafe { self.set_unchecked(index, key) }
             } else {
                 // The key doesn't fit, `keys_size` is too small.
                 panic!(
@@ -190,6 +199,25 @@ impl KeyVec {
         }
     }
 
+    /// Sets the key at the given index to the given `key`.
+    ///
+    /// # Safety
+    ///
+    /// `index` must be `< self.len()`, and
+    /// `key_min_size(key)` must be `<= self.keys_size()`.
+    pub(crate) unsafe fn set_unchecked(&mut self, index: usize, key: Key) {
+        debug_assert!(index <= self.len());
+        if self.keys_size == 0 {
+            // Nothing to do, `key` is zero since `key_min_size(key) == 0`.
+            debug_assert_eq!(key, Key::with_value(0));
+        } else {
+            debug_assert!(key.min_size() <= self.keys_size);
+            let bit_range = Self::key_bit_range(self.keys_size, index);
+            debug_assert!(bit_range.end <= self.vec_or_len.vec.len());
+            self.vec_or_len.vec.deref_mut()[bit_range].store(key.value);
+        }
+    }
+
     /// Appends the given `key` to the end of the `KeyVec`.
     ///
     /// # Panics
@@ -198,20 +226,38 @@ impl KeyVec {
     pub(crate) fn push(&mut self, key: Key) {
         let key_min_size = key.min_size();
         if key_min_size <= self.keys_size {
-            if self.keys_size == 0 {
-                debug_assert_eq!(key, Key::with_value(0));
-                // SAFETY: `keys_size` is zero so `len` is the active field.
-                unsafe { self.vec_or_len.len += 1 }
-            } else {
-                // SAFETY: We are in a `if SAFETY_CONDITION` block.
-                unsafe { self.push_unchecked(key) }
-            }
+            // SAFETY: The key fits.
+            unsafe { self.push_unchecked(key) }
         } else {
             // The key doesn't fit, `keys_size` is too small.
             panic!(
                 "key min size (is {} bits) should be <= keys_size (is {})",
                 key_min_size, self.keys_size,
             );
+        }
+    }
+
+    /// Appends the given `key` to the end of the `KeyVec`.
+    ///
+    /// # Safety
+    ///
+    /// `key_min_size(key)` must be `<= self.keys_size()`.
+    pub(crate) unsafe fn push_unchecked(&mut self, key: Key) {
+        if self.keys_size == 0 {
+            debug_assert_eq!(key, Key::with_value(0));
+            // SAFETY: `keys_size` is zero so `len` is the active field.
+            unsafe { self.vec_or_len.len += 1 }
+        } else {
+            debug_assert!(key.min_size() <= self.keys_size);
+            let key_le = key.value.to_le();
+            let key_bits = key_le.as_raw_slice();
+            let key_bits: &BitSlice<usize, Lsb0> = BitSlice::from_slice(key_bits);
+            // `keys_size` is <= `Key`'s size in bits, this won't go out-of-bounds.
+            let key_bits = &key_bits[0..self.keys_size];
+            self.vec_or_len
+                .vec
+                .deref_mut()
+                .extend_from_bitslice(key_bits);
         }
     }
 
@@ -239,63 +285,13 @@ impl KeyVec {
                         // so `0 <= len-1`.
                         self.get_unchecked(len - 1)
                     };
-                    let vec_len_in_bits = self.vec_or_len.vec.len();
-                    self.vec_or_len
-                        .vec
-                        .deref_mut()
-                        .truncate(vec_len_in_bits - self.keys_size);
+                    let new_len = self.len() - 1;
+                    let new_len_in_bits = new_len * self.keys_size;
+                    self.vec_or_len.vec.deref_mut().truncate(new_len_in_bits);
                     Some(last_key)
                 }
             }
         }
-    }
-
-    /// Returns the key at the given index in the `KeyVec`.
-    ///
-    /// # Safety
-    ///
-    /// `self.keys_size()` must be non-zero, and
-    /// `index` must be `< self.len()`.
-    pub(crate) unsafe fn get_unchecked(&self, index: usize) -> Key {
-        debug_assert!(0 < self.keys_size);
-        let bit_range = Self::key_bit_range(self.keys_size, index);
-        debug_assert!(bit_range.end <= self.vec_or_len.vec.len());
-        Key::with_value(self.vec_or_len.vec[bit_range].load())
-    }
-
-    /// Sets the key at the given index to the given `key`.
-    ///
-    /// # Safety
-    ///
-    /// `self.keys_size()` must be non-zero, and
-    /// `index` must be `< self.len()`, and
-    /// `key_min_size(key)` must be `<= self.keys_size()`.
-    pub(crate) unsafe fn set_unchecked(&mut self, index: usize, key: Key) {
-        debug_assert!(0 < self.keys_size);
-        debug_assert!(key.min_size() <= self.keys_size);
-        let bit_range = Self::key_bit_range(self.keys_size, index);
-        debug_assert!(bit_range.end <= self.vec_or_len.vec.len());
-        self.vec_or_len.vec.deref_mut()[bit_range].store(key.value);
-    }
-
-    /// Appends the given `key` to the end of the `KeyVec`.
-    ///
-    /// # Safety
-    ///
-    /// `self.keys_size()` must be non-zero, and
-    /// `key_min_size(key)` must be `<= self.keys_size()`.
-    pub(crate) unsafe fn push_unchecked(&mut self, key: Key) {
-        debug_assert!(0 < self.keys_size);
-        debug_assert!(key.min_size() <= self.keys_size);
-        let key_le = key.value.to_le();
-        let key_bits = key_le.as_raw_slice();
-        let key_bits: &BitSlice<usize, Lsb0> = BitSlice::from_slice(key_bits);
-        // `keys_size` is <= `Key`'s size in bits, this won't go out-of-bounds.
-        let key_bits = &key_bits[0..self.keys_size];
-        self.vec_or_len
-            .vec
-            .deref_mut()
-            .extend_from_bitslice(key_bits);
     }
 
     /// Reserves capacity for at least `additional` more keys,
@@ -340,6 +336,7 @@ impl KeyVec {
                 self.vec_or_len = BitVecOrLen {
                     vec: ManuallyDrop::new(BitVec::repeat(false, len * new_keys_size)),
                 };
+                // `keys_size` is updated at the end of the function.
             }
         } else {
             match self.keys_size.cmp(&new_keys_size) {

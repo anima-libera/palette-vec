@@ -112,12 +112,8 @@ where
         // and the new element had no instance yet (which allows the key allocator to reuse the key
         // of the removed element for the new one).
         let key_of_elemement_to_remove = {
-            if self.key_vec.keys_size() == 0 {
-                Key::with_value(0)
-            } else {
-                // SAFETY: We checked the bounds, we have `index < self.len()`.
-                unsafe { self.key_vec.get_unchecked(index) }
-            }
+            // SAFETY: We checked the bounds so we have `index < self.len()`.
+            unsafe { self.key_vec.get_unchecked(index) }
         };
         self.palette
             .remove_element_instances(key_of_elemement_to_remove, {
@@ -135,14 +131,9 @@ where
                 reserved_key: None,
             },
         );
-        if self.key_vec.keys_size() == 0 {
-            // Nothing to do here, all the keys have the same value of zero.
-            debug_assert_eq!(key_of_element_to_add, Key::with_value(0));
-        } else {
-            // SAFETY: We checked the bounds, we have `index < self.len()`,
-            // and `add_element_instances` made sure that the key fits.
-            unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
-        }
+        // SAFETY: We checked the bounds so we have `index < self.len()`,
+        // and `add_element_instances` made sure that the key fits.
+        unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
     }
 
     /// Appends the given `element` to the back of the `PalVec`'s array.
@@ -162,7 +153,8 @@ where
                 reserved_key: None,
             },
         );
-        self.key_vec.push(key);
+        // SAFETY: `KeyAllocator` made sure that the key fits.
+        unsafe { self.key_vec.push_unchecked(key) }
     }
 
     /// Removes the last element from the `PalVec`'s array and returns it,
