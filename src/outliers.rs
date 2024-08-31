@@ -3,7 +3,7 @@ use std::{marker::PhantomData, num::NonZeroUsize, ops::Index};
 use fxhash::FxHashMap;
 
 use crate::{
-    key::{Key, KeyAllocator, Opsk, OpskAllocator, PaletteKeyType},
+    key::{Key, KeyAllocator, Opsk, OpskAllocator},
     key_vec::KeyVec,
     palette::Palette,
     utils::view_to_owned::ViewToOwned,
@@ -11,6 +11,7 @@ use crate::{
 };
 
 // TODO: Better doc!
+#[derive(Clone)]
 pub struct OutPalVec<T, I = OutlierMemoryRatioIntervalDefault>
 where
     T: Clone + Eq,
@@ -35,11 +36,15 @@ where
     _phantom_interval: PhantomData<I>,
 }
 
-pub trait OutlierMemoryRatioInterval {
+pub trait OutlierMemoryRatioInterval
+where
+    Self: Clone,
+{
     const LOWER_LIMIT_WEAK: f32;
     const UPPER_LIMIT: f32;
 }
 
+#[derive(Clone)]
 pub struct OutlierMemoryRatioIntervalDefault;
 impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalDefault {
     const LOWER_LIMIT_WEAK: f32 = 0.013;
@@ -433,6 +438,7 @@ mod tests {
 
     #[test]
     fn outlier_ratio_upper_limit() {
+        #[derive(Clone)]
         pub struct OutlierMemoryRatioIntervalTest;
         impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalTest {
             const LOWER_LIMIT_WEAK: f32 = 0.010;
@@ -467,5 +473,16 @@ mod tests {
         palvec.push(5);
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
+    }
+
+    #[test]
+    fn clone() {
+        let mut palvec: OutPalVec<i32> = OutPalVec::new();
+        palvec.push(8);
+        palvec.push(5);
+        let palvec = palvec.clone();
+        assert_eq!(palvec[0], 8);
+        assert_eq!(palvec[1], 5);
+        assert_eq!(palvec.len(), 2);
     }
 }

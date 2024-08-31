@@ -2,12 +2,13 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::ops::Index;
 
-use crate::key::{Key, KeyAllocator, PaletteKeyType};
+use crate::key::{Key, KeyAllocator};
 use crate::key_vec::KeyVec;
 use crate::palette::Palette;
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
 // TODO: Better doc!
+#[derive(Clone)]
 pub struct PalVec<T>
 where
     T: Clone + Eq,
@@ -382,5 +383,16 @@ mod tests {
         palvec.push(5);
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
+    }
+
+    #[test]
+    fn clone() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        palvec.push(8);
+        palvec.push(5);
+        let palvec = palvec.clone();
+        assert_eq!(palvec[0], 8);
+        assert_eq!(palvec[1], 5);
+        assert_eq!(palvec.len(), 2);
     }
 }

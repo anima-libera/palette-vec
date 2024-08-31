@@ -223,7 +223,7 @@ impl KeyVec {
     /// # Panics
     ///
     /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
-    pub(crate) fn push(&mut self, key: Key) {
+    pub(crate) fn _push(&mut self, key: Key) {
         let key_min_size = key.min_size();
         if key_min_size <= self.keys_size {
             // SAFETY: The key fits.
@@ -400,6 +400,29 @@ impl KeyVec {
     }
 }
 
+impl Clone for KeyVec {
+    fn clone(&self) -> Self {
+        KeyVec {
+            keys_size: self.keys_size,
+            vec_or_len: if 0 == self.keys_size {
+                BitVecOrLen {
+                    len: {
+                        // SAFETY: `keys_size` is zero so `len` is active.
+                        unsafe { self.vec_or_len.len }
+                    },
+                }
+            } else {
+                BitVecOrLen {
+                    vec: {
+                        // SAFETY: `keys_size` is not zero so `vec` is active.
+                        unsafe { self.vec_or_len.vec.clone() }
+                    },
+                }
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,13 +458,13 @@ mod tests {
     fn key_size_zero_remains_len() {
         let mut key_vec = KeyVec::new();
         assert_is_len(&key_vec, 0);
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         assert_is_len(&key_vec, 1);
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         assert_is_len(&key_vec, 2);
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         assert_is_len(&key_vec, 3);
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         assert_is_len(&key_vec, 4);
     }
 
@@ -449,22 +472,22 @@ mod tests {
     fn key_size_nonzero_switches_to_vec() {
         let mut key_vec = KeyVec::new();
         assert_is_len(&key_vec, 0);
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         assert_is_len(&key_vec, 1);
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         assert_is_len(&key_vec, 2);
         key_vec.change_keys_size(1);
         assert_is_vec(&key_vec, 2);
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         assert_is_vec(&key_vec, 3);
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         assert_is_vec(&key_vec, 4);
     }
 
     #[test]
     fn can_push_max_key_for_any_size() {
         let mut key_vec = KeyVec::new();
-        key_vec.push(Key::with_value(0));
+        key_vec._push(Key::with_value(0));
         for key_size in 1..=usize::BITS as usize {
             let mak_key_for_given_size = Key::with_value({
                 let mut value = 0;
@@ -474,7 +497,7 @@ mod tests {
                 value
             });
             key_vec.change_keys_size(key_size);
-            key_vec.push(mak_key_for_given_size);
+            key_vec._push(mak_key_for_given_size);
         }
     }
 

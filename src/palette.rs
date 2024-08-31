@@ -21,6 +21,26 @@ impl<T> Default for PaletteEntry<T> {
     }
 }
 
+impl<T> Clone for PaletteEntry<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            count: self.count,
+            element: if self.count == 0 {
+                MaybeUninit::uninit()
+            } else {
+                MaybeUninit::new({
+                    // SAFETY: The entry's `count` is non zero so the element is initialized.
+                    unsafe { self.element.assume_init_ref().clone() }
+                })
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct Palette<T, K>
 where
     T: Clone + Eq,
@@ -114,7 +134,8 @@ where
                 .find(|(_key_value, palette_entry)| {
                     if 0 < palette_entry.count {
                         let entry_element = {
-                            // SAFETY: The entry's `count` is non zero so the element is initialized.
+                            // SAFETY: The entry's `count` is non zero
+                            // so the element is initialized.
                             unsafe { palette_entry.element.assume_init_ref() }
                         };
                         element.eq(entry_element)
