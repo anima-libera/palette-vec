@@ -312,6 +312,27 @@ where
             self.move_most_numerous_outlier_to_common();
         }
     }
+
+    /// Returns the number of instances of the given element.
+    ///
+    /// This operation is *O*(*common_palette_len + outlier_palette_len*).
+    /// The common palette is searched first.
+    pub fn number_of_instances(&self, element: &impl ViewToOwned<T>) -> usize {
+        let count_if_common = self.common_palette.number_of_instances(element);
+        if count_if_common == 0 {
+            self.outlier_palette.number_of_instances(element)
+        } else {
+            count_if_common
+        }
+    }
+
+    /// Returns `true` if the given element is present in the `PalVec`.
+    ///
+    /// This operation is *O*(*common_palette_len + outlier_palette_len*).
+    /// The common palette is searched first.
+    pub fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
+        self.number_of_instances(element) != 0
+    }
 }
 
 impl<T> Default for OutPalVec<T>

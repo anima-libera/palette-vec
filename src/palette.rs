@@ -229,20 +229,32 @@ where
             })
     }
 
+    /// Returns the number of instances of the given element.
+    ///
+    /// This operation is *O*(*len*).
+    pub(crate) fn number_of_instances(&self, element: &impl ViewToOwned<T>) -> usize {
+        self.vec
+            .iter()
+            .find_map(|palette_entry| {
+                (0 < palette_entry.count)
+                    .then(|| {
+                        let entry_element = {
+                            // SAFETY: The entry's `count` is non zero
+                            // so the element is initialized.
+                            unsafe { palette_entry.element.assume_init_ref() }
+                        };
+                        (element.eq(entry_element)).then_some(palette_entry.count)
+                    })
+                    .flatten()
+            })
+            .unwrap_or(0)
+    }
+
     /// Returns `true` if the palette contains the given element.
     ///
     /// This operation is *O*(*len*).
     pub(crate) fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
-        self.vec.iter().any(|palette_entry| {
-            0 < palette_entry.count
-                && ({
-                    let entry_element = {
-                        // SAFETY: The entry's `count` is non zero so the element is initialized.
-                        unsafe { palette_entry.element.assume_init_ref() }
-                    };
-                    element.eq(entry_element)
-                })
-        })
+        self.number_of_instances(element) != 0
     }
 
     /// Returns an iterator over the keys currently used by the palette.

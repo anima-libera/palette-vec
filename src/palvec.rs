@@ -179,10 +179,17 @@ where
         self.palette.len()
     }
 
-    /// Returns `true` if the palette contains the given element.
+    /// Returns the number of instances of the given element.
     ///
     /// This operation is *O*(*palette_len*).
-    pub fn palette_contains(&self, element: &impl ViewToOwned<T>) -> bool {
+    pub fn number_of_instances(&self, element: &impl ViewToOwned<T>) -> usize {
+        self.palette.number_of_instances(element)
+    }
+
+    /// Returns `true` if the given element is present in the `PalVec`.
+    ///
+    /// This operation is *O*(*palette_len*).
+    pub fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
         self.palette.contains(element)
     }
 }

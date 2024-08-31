@@ -5,7 +5,7 @@
 
 ## Implement nice traits
 (look at std `Vec` and `HashMap` to get inspiration for nice combinations of type parameters and `Self` as reference or not)
-- `Clone`, `Debug`, `Default`, `PartialEq`, `Eq`
+- `Debug`, `Default`, `PartialEq`, `Eq`
 - `Index` (for one index but also ranges)
 - `Extend`, `FromIterator`, `IntoIterator`, `From` (like from `Vec<T>`, `[T]` and the likes)
 
@@ -14,7 +14,6 @@
 - `with_len_and_palette_len` (which preallocates the palette and starts with the good keys size)
 - `with_capacity`, `capacity`, `reserve`
 - unsafe unstable `into_raw_parts` and `from_raw_parts`
-- get number of instances of an element
 - is an element an outlier or a common element
 - get iterators over various combinations of palette data
 - insert and remove values at arbitrary indices
@@ -26,6 +25,10 @@
 - `iter`, `windows`, `chunks`
 - `drain`
 - `clear`
+
+## Macros
+Something like `palvec![elem; N]` and `palvec![elem, elem, elem, ...]`.
+And the same for `outpalvec![...]`.
 
 ## Add PalVecSlice and OutPalVecSlice types
 They would be views into a range (that can be `..`) of an owned PalVec.
