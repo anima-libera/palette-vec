@@ -5,9 +5,10 @@
 
 ## Implement nice traits
 (look at std `Vec` and `HashMap` to get inspiration for nice combinations of type parameters and `Self` as reference or not)
-- `Debug`, `Default`, `PartialEq`, `Eq`
+- `Debug`, `Default`, `PartialEq`, `Eq`, `Hash`
 - `Index` (for one index but also ranges)
 - `Extend`, `FromIterator`, `IntoIterator`, `From` (like from `Vec<T>`, `[T]` and the likes)
+- serde traits: `Serialize`, `Deserialize`
 
 ## Implement nice methods
 (look at std `Vec` and `HashMap` to get inspiration)
@@ -35,6 +36,10 @@ They would be views into a range (that can be `..`) of an owned PalVec.
 
 ## Allow for multiple PalVecs to share a single palette (or not?)
 Maybee... This would be tricky to make it work safely without a super annoying API, and also the use cases seem even more niche than palette compression...
+
+## Multithreading
+Allow some safe multithreaded operations on PalVecs.
+For example, it would be nice to allow for multiple threads to each be able to iterate (mutably) over non-overlapping slices. It would require a thread-safe mutable palette with special care for performance (like trying to lock as few as possible), and be careful at the slice edges where memory words are shared by two slices (like `...[xxxy][yyzz]...` where x, y and z are keys and memory words are in brackets, if a slice starts or stops at y (included) then it will share a memory word with its neighboring slice) that will require care to be handled by multiple threads without data races.
 
 ## Tests
 Test everything, stress test everything, with all the types and settings.

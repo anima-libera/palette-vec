@@ -32,7 +32,9 @@ where
     /// thing as we could think in terms of smaller memory usage to decide when to move elements
     /// between the outlier and common palettes.
     index_to_opsk_map: FxHashMap<usize, Opsk>,
+    /// The palette holds owned `T`s, also `T` has to be used in a field.
     _phantom: PhantomData<T>,
+    /// `I` has to be used in a field.
     _phantom_interval: PhantomData<I>,
 }
 

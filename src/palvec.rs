@@ -22,8 +22,7 @@ where
     ///
     /// A key that is not present in the palette is considered unused and tracked by `unused_keys`.
     palette: Palette<T, Key>,
-    /// The palette holds owned `T`s,
-    /// also `T` has to be used in a field.
+    /// The palette holds owned `T`s, also `T` has to be used in a field.
     _phantom: PhantomData<T>,
 }
 
