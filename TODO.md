@@ -82,3 +82,4 @@ Remove redundant checks, put parameter requirements and reassuring checks in `de
 
 ## Simd?
 Would it even be usable on our non-bit-aligned keys?
+Oh! It will surely be useful on the vec implementation of the IndexMap!

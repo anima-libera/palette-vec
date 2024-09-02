@@ -1,5 +1,6 @@
 //! Palette-compressed Vec-like collection.
 
+mod index_map;
 mod key;
 mod key_vec;
 mod outliers;
