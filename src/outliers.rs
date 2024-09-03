@@ -1,8 +1,7 @@
 use std::{marker::PhantomData, num::NonZeroUsize, ops::Index};
 
-use fxhash::FxHashMap;
-
 use crate::{
+    index_map::IndexMap,
     key::{Key, KeyAllocator, Opsk, OpskAllocator},
     key_vec::KeyVec,
     palette::Palette,
@@ -31,7 +30,7 @@ where
     /// with precision, which enables the best possible memory usage optimization for this whole
     /// thing as we could think in terms of smaller memory usage to decide when to move elements
     /// between the outlier and common palettes.
-    index_to_opsk_map: FxHashMap<usize, Opsk>,
+    index_to_opsk_map: IndexMap,
     /// The palette holds owned `T`s, also `T` has to be used in a field.
     _phantom: PhantomData<T>,
     /// `I` has to be used in a field.
@@ -64,7 +63,7 @@ where
             common_palette: Palette::new(),
             outlier_key: None,
             outlier_palette: Palette::new(),
-            index_to_opsk_map: FxHashMap::default(),
+            index_to_opsk_map: IndexMap::new(),
             _phantom: PhantomData,
             _phantom_interval: PhantomData,
         }
@@ -82,7 +81,7 @@ where
                 common_palette: Palette::with_one_entry(element, len),
                 outlier_key: None,
                 outlier_palette: Palette::new(),
-                index_to_opsk_map: FxHashMap::default(),
+                index_to_opsk_map: IndexMap::new(),
                 _phantom: PhantomData,
                 _phantom_interval: PhantomData,
             }
@@ -104,9 +103,9 @@ where
     pub fn get(&self, index: usize) -> Option<&T> {
         let key = self.key_vec.get(index)?;
         Some(if Some(key) == self.outlier_key {
-            let opsk = *self
+            let opsk = self
                 .index_to_opsk_map
-                .get(&index)
+                .get(index)
                 .expect("Bug: Outlier key in `key_vec` but index not in index map");
             self.outlier_palette
                 .get(opsk)
@@ -132,7 +131,7 @@ where
         if Some(key_of_elemement_to_remove) == self.outlier_key {
             let opsk_of_elemement_to_remove = self
                 .index_to_opsk_map
-                .remove(&index)
+                .remove(index)
                 .expect("Bug: Outlier key in `key_vec` but index not in index map");
             self.outlier_palette
                 .remove_element_instances(opsk_of_elemement_to_remove, {
@@ -171,7 +170,7 @@ where
                 },
                 &mut OpskAllocator,
             );
-            let previous_entry = self.index_to_opsk_map.insert(index, opsk_of_element_to_add);
+            let previous_entry = self.index_to_opsk_map.set(index, opsk_of_element_to_add);
             if previous_entry.is_some() {
                 panic!("Bug: Index map entry was supposed to be unoccupied");
             }
@@ -221,7 +220,7 @@ where
             );
             let previous_entry = self
                 .index_to_opsk_map
-                .insert(self.key_vec.len(), opsk_of_element_to_add);
+                .set(self.key_vec.len(), opsk_of_element_to_add);
             if previous_entry.is_some() {
                 panic!("Bug: Index map entry was supposed to be unoccupied");
             }
@@ -249,7 +248,7 @@ where
             if Some(key_of_elemement_to_remove) == self.outlier_key {
                 let opsk_of_elemement_to_remove = self
                     .index_to_opsk_map
-                    .remove(&self.key_vec.len())
+                    .remove(self.key_vec.len())
                     .expect("Bug: Outlier key in `key_vec` but index not in index map");
                 self.outlier_palette
                     .remove_element_instances(opsk_of_elemement_to_remove, {
@@ -285,13 +284,10 @@ where
                 reserved_key: self.outlier_key,
             },
         );
-        self.index_to_opsk_map.retain(|index, opsk| {
-            let remove = *opsk == opsk_to_move;
-            if remove {
-                self.key_vec.set(*index, new_key);
-            }
-            !remove
-        });
+        self.index_to_opsk_map
+            .remove_all_with_opsk(opsk_to_move, |index| {
+                self.key_vec.set(index, new_key);
+            });
     }
 
     fn outlier_ratio(&self) -> Option<f32> {
