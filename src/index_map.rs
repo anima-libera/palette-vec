@@ -33,6 +33,7 @@ impl IndexMap {
                     self.set(index_in_key_vec, opsk);
                     return;
                 }
+                // We made sure these values fit in the current number type.
                 map_sized_u16.set(index_in_key_vec as u16, opsk.value as u16);
             }
             IndexMapEnum::U32(map_sized_u32) => {
@@ -44,6 +45,7 @@ impl IndexMap {
                     self.set(index_in_key_vec, opsk);
                     return;
                 }
+                // We made sure these values fit in the current number type.
                 map_sized_u32.set(index_in_key_vec as u32, opsk.value as u32);
             }
             IndexMapEnum::U64(map_sized_u64) => {
@@ -55,12 +57,14 @@ impl IndexMap {
     pub(crate) fn get(&self, index_in_key_vec: usize) -> Option<Opsk> {
         match &self.inner {
             IndexMapEnum::U16(map_sized_u16) => {
+                // If the index doesn't fit in the current number type then it is out of bounds.
                 let index_in_key_vec: u16 = index_in_key_vec.try_into().ok()?;
                 map_sized_u16
                     .get(index_in_key_vec)
                     .map(|opsk_value| Opsk::with_value(opsk_value as usize))
             }
             IndexMapEnum::U32(map_sized_u32) => {
+                // If the index doesn't fit in the current number type then it is out of bounds.
                 let index_in_key_vec: u32 = index_in_key_vec.try_into().ok()?;
                 map_sized_u32
                     .get(index_in_key_vec)
@@ -68,6 +72,28 @@ impl IndexMap {
             }
             IndexMapEnum::U64(map_sized_u64) => map_sized_u64
                 .get(index_in_key_vec as u64)
+                .map(|opsk_value| Opsk::with_value(opsk_value as usize)),
+        }
+    }
+
+    pub(crate) fn remove(&mut self, index_in_key_vec: usize) -> Option<Opsk> {
+        match &mut self.inner {
+            IndexMapEnum::U16(map_sized_u16) => {
+                // If the index doesn't fit in the current number type then it is out of bounds.
+                let index_in_key_vec: u16 = index_in_key_vec.try_into().ok()?;
+                map_sized_u16
+                    .remove(index_in_key_vec)
+                    .map(|opsk_value| Opsk::with_value(opsk_value as usize))
+            }
+            IndexMapEnum::U32(map_sized_u32) => {
+                // If the index doesn't fit in the current number type then it is out of bounds.
+                let index_in_key_vec: u32 = index_in_key_vec.try_into().ok()?;
+                map_sized_u32
+                    .remove(index_in_key_vec)
+                    .map(|opsk_value| Opsk::with_value(opsk_value as usize))
+            }
+            IndexMapEnum::U64(map_sized_u64) => map_sized_u64
+                .remove(index_in_key_vec as u64)
                 .map(|opsk_value| Opsk::with_value(opsk_value as usize)),
         }
     }
@@ -103,17 +129,10 @@ trait NumberType
 where
     Self: Clone + Copy + Ord + TryFrom<usize>,
 {
-    const IS_U64: bool;
 }
-impl NumberType for u16 {
-    const IS_U64: bool = false;
-}
-impl NumberType for u32 {
-    const IS_U64: bool = false;
-}
-impl NumberType for u64 {
-    const IS_U64: bool = true;
-}
+impl NumberType for u16 {}
+impl NumberType for u32 {}
+impl NumberType for u64 {}
 
 struct IndexMapEntry<N>
 where
@@ -127,6 +146,11 @@ struct IndexMapSized<N>
 where
     N: NumberType,
 {
+    /// Always sorted per their `index_in_key_vec` field
+    /// so that finding the entry for a given `index_in_key_vec` can be done in log(len)
+    /// via `[T]::binary_search_by_key`.
+    ///
+    /// There are no multiple entries that share a same `index_in_key_vec`.
     vec: Vec<IndexMapEntry<N>>,
 }
 
@@ -182,6 +206,14 @@ where
             .binary_search_by_key(&index_in_key_vec, |entry| entry.index_in_key_vec)
             .ok()?;
         Some(self.vec[index_in_map].opsk_value)
+    }
+
+    fn remove(&mut self, index_in_key_vec: N) -> Option<N> {
+        let index_in_map = self
+            .vec
+            .binary_search_by_key(&index_in_key_vec, |entry| entry.index_in_key_vec)
+            .ok()?;
+        Some(self.vec.remove(index_in_map).opsk_value)
     }
 }
 
@@ -267,5 +299,34 @@ mod tests {
             index_map.get(u32::MAX as usize + 1),
             Some(Opsk::with_value(3))
         );
+    }
+
+    #[test]
+    fn can_fit_max_values() {
+        let mut index_map = IndexMap::new();
+        index_map.set(u64::MAX as usize, Opsk::with_value(u64::MAX as usize));
+        assert_eq!(
+            index_map.get(u64::MAX as usize),
+            Some(Opsk::with_value(u64::MAX as usize))
+        );
+    }
+
+    #[test]
+    fn remove() {
+        let mut index_map = IndexMap::new();
+        index_map.set(0, Opsk::with_value(0));
+        index_map.set(1, Opsk::with_value(2));
+        index_map.set(10, Opsk::with_value(20));
+        index_map.set(100, Opsk::with_value(200));
+        index_map.set(1000, Opsk::with_value(2000));
+        index_map.set(10000, Opsk::with_value(20000));
+        assert_eq!(index_map.remove(1), Some(Opsk::with_value(2)));
+        assert_eq!(index_map.remove(1000), Some(Opsk::with_value(2000)));
+        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(1), None);
+        assert_eq!(index_map.get(10), Some(Opsk::with_value(20)));
+        assert_eq!(index_map.get(100), Some(Opsk::with_value(200)));
+        assert_eq!(index_map.get(1000), None);
+        assert_eq!(index_map.get(10000), Some(Opsk::with_value(20000)));
     }
 }
