@@ -12,6 +12,12 @@ pub(crate) struct PaletteEntry<T> {
     element: MaybeUninit<T>,
 }
 
+impl<T> PaletteEntry<T> {
+    pub(crate) fn count(&self) -> usize {
+        self.count
+    }
+}
+
 impl<T> Default for PaletteEntry<T> {
     fn default() -> Self {
         Self {
@@ -275,6 +281,28 @@ where
             .and_then(|(key_value, palette_entry)| {
                 (0 < palette_entry.count).then_some(K::with_value(key_value))
             })
+    }
+
+    pub(crate) fn key_of_least_instanced_element(&self) -> Option<K> {
+        self.vec
+            .iter()
+            .enumerate()
+            .min_by_key(|(_key_value, palette_entry)| palette_entry.count)
+            .and_then(|(key_value, palette_entry)| {
+                (0 < palette_entry.count).then_some(K::with_value(key_value))
+            })
+    }
+
+    /// Returns an iterator over the keys currently unused by the palette.
+    /// The iterator will go on.
+    pub(crate) fn unused_keys(&self) -> impl Iterator<Item = K> + '_ {
+        self.vec
+            .iter()
+            .enumerate()
+            .filter_map(|(key_value, palette_entry)| {
+                (palette_entry.count == 0).then_some(K::with_value(key_value))
+            })
+            .chain((self.vec.len()..).map(K::with_value))
     }
 
     pub(crate) fn remove_entry(&mut self, key: K) -> Option<PaletteEntry<T>> {

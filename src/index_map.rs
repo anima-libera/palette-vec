@@ -42,12 +42,52 @@ impl IndexMap {
         }
     }
 
+    pub(crate) fn capacity(&self) -> usize {
+        match &self.inner {
+            IndexMapEnum::U16(map_sized_u16) => map_sized_u16.capacity(),
+            IndexMapEnum::U32(map_sized_u32) => map_sized_u32.capacity(),
+            IndexMapEnum::U64(map_sized_u64) => map_sized_u64.capacity(),
+        }
+    }
+
+    fn entry_size(&self) -> usize {
+        let number_size = match &self.inner {
+            IndexMapEnum::U16(_map_sized_u16) => 2,
+            IndexMapEnum::U32(_map_sized_u32) => 4,
+            IndexMapEnum::U64(_map_sized_u64) => 8,
+        };
+        number_size * 2
+    }
+
+    /// The allocated memory (in bytes).
+    pub(crate) fn actual_memory_usage(&self) -> usize {
+        self.capacity() * self.entry_size()
+    }
+
+    /// The used memory (in bytes).
+    pub(crate) fn used_memory_usage(&self) -> usize {
+        self.len() * self.entry_size()
+    }
+
+    /// The used memory (in bytes) if this many entries were added to the map.
+    /// Assumes that the number size doesn't grow.
+    pub(crate) fn used_memory_usage_if_adding_entries(&self, how_many: usize) -> usize {
+        (self.len() + how_many) * self.entry_size()
+    }
+
+    /// The used memory (in bytes) if this many entries were added to the map.
+    /// Assumes that the number size doesn't grow.
+    pub(crate) fn used_memory_usage_if_removing_entries(&self, how_many: usize) -> usize {
+        debug_assert!(how_many <= self.len());
+        (self.len() - how_many) * self.entry_size()
+    }
+
     pub(crate) fn set(&mut self, index_in_key_vec: usize, opsk: Opsk) -> Option<Opsk> {
         match &mut self.inner {
             IndexMapEnum::U16(map_sized_u16) => {
                 let max = index_in_key_vec.max(opsk.value);
                 if (u16::MAX as usize) < max {
-                    self.grow_to_accomodate(max);
+                    self.grow_number_size_to_accomodate(max);
                     // Re-run the match, it is no longer u16.
                     // This is a super rare path so it is ok if it is dumb.
                     return self.set(index_in_key_vec, opsk);
@@ -59,7 +99,7 @@ impl IndexMap {
             IndexMapEnum::U32(map_sized_u32) => {
                 let max = index_in_key_vec.max(opsk.value);
                 if (u32::MAX as usize) < max {
-                    self.grow_to_accomodate(max);
+                    self.grow_number_size_to_accomodate(max);
                     // Re-run the match, it is no longer u32.
                     // This is a super rare path so it is ok if it is dumb.
                     return self.set(index_in_key_vec, opsk);
@@ -152,7 +192,13 @@ impl IndexMap {
         }
     }
 
-    fn grow_to_accomodate(&mut self, to_what_number: usize) {
+    pub(crate) fn add_many_entries(&mut self, how_many: usize) -> AddManyEntries<'_> {
+        AddManyEntries::for_map(self, how_many)
+    }
+
+    /// Use a bigger number size to accomodate the given number that doesn't fit yet.
+    /// Growing means using `u32` or `u64` instead of `u16`, or using `u64` instead of `u32`.
+    fn grow_number_size_to_accomodate(&mut self, to_what_number: usize) {
         let empty_map = IndexMapEnum::U16(IndexMapSized { vec: vec![] });
         let map = std::mem::replace(&mut self.inner, empty_map);
         match map {
@@ -177,11 +223,90 @@ impl IndexMap {
             }
         }
     }
+
+    /// Breaks the "always sorted" invariant by adding that many dummy entries at the end.
+    unsafe fn add_many_dummy_entries(&mut self, how_many: usize) {
+        match &mut self.inner {
+            IndexMapEnum::U16(map_sized_u16) => {
+                map_sized_u16.add_many_dummy_entries(how_many);
+            }
+            IndexMapEnum::U32(map_sized_u32) => {
+                map_sized_u32.add_many_dummy_entries(how_many);
+            }
+            IndexMapEnum::U64(map_sized_u64) => {
+                map_sized_u64.add_many_dummy_entries(how_many);
+            }
+        }
+    }
+
+    unsafe fn get_entry_at_map_index(&self, index_in_map: usize) -> (usize, Opsk) {
+        match &self.inner {
+            IndexMapEnum::U16(map_sized_u16) => {
+                let entry = map_sized_u16.get_entry_at_map_index(index_in_map);
+                (entry.0 as usize, Opsk::with_value(entry.1 as usize))
+            }
+            IndexMapEnum::U32(map_sized_u32) => {
+                let entry = map_sized_u32.get_entry_at_map_index(index_in_map);
+                (entry.0 as usize, Opsk::with_value(entry.1 as usize))
+            }
+            IndexMapEnum::U64(map_sized_u64) => {
+                let entry = map_sized_u64.get_entry_at_map_index(index_in_map);
+                (entry.0 as usize, Opsk::with_value(entry.1 as usize))
+            }
+        }
+    }
+
+    unsafe fn set_entry_at_map_index(
+        &mut self,
+        index_in_map: usize,
+        index_in_key_vec: usize,
+        opsk: Opsk,
+    ) {
+        match &mut self.inner {
+            IndexMapEnum::U16(map_sized_u16) => {
+                let max = index_in_key_vec.max(opsk.value);
+                if (u16::MAX as usize) < max {
+                    self.grow_number_size_to_accomodate(max);
+                    // Re-run the match, it is no longer u16.
+                    // This is a super rare path so it is ok if it is dumb.
+                    return self.set_entry_at_map_index(index_in_map, index_in_key_vec, opsk);
+                }
+                // We made sure these values fit in the current number type.
+                map_sized_u16.set_entry_at_map_index(
+                    index_in_map,
+                    index_in_key_vec as u16,
+                    opsk.value as u16,
+                );
+            }
+            IndexMapEnum::U32(map_sized_u32) => {
+                let max = index_in_key_vec.max(opsk.value);
+                if (u32::MAX as usize) < max {
+                    self.grow_number_size_to_accomodate(max);
+                    // Re-run the match, it is no longer u32.
+                    // This is a super rare path so it is ok if it is dumb.
+                    return self.set_entry_at_map_index(index_in_map, index_in_key_vec, opsk);
+                }
+                // We made sure these values fit in the current number type.
+                map_sized_u32.set_entry_at_map_index(
+                    index_in_map,
+                    index_in_key_vec as u32,
+                    opsk.value as u32,
+                );
+            }
+            IndexMapEnum::U64(map_sized_u64) => {
+                map_sized_u64.set_entry_at_map_index(
+                    index_in_map,
+                    index_in_key_vec as u64,
+                    opsk.value as u64,
+                );
+            }
+        }
+    }
 }
 
 trait NumberType
 where
-    Self: Clone + Copy + Ord + TryFrom<usize> + TryInto<usize>,
+    Self: Clone + Copy + Ord + TryFrom<usize> + TryInto<usize> + Default,
 {
 }
 impl NumberType for u16 {}
@@ -238,6 +363,10 @@ where
 
     fn len(&self) -> usize {
         self.vec.len()
+    }
+
+    fn capacity(&self) -> usize {
+        self.vec.capacity()
     }
 
     fn set(&mut self, index_in_key_vec: N, opsk_value: N) -> Option<N> {
@@ -303,6 +432,162 @@ where
         }
         let new_smaller_len = next_available_index_in_map;
         self.vec.truncate(new_smaller_len);
+    }
+
+    /// Breaks the "always sorted" invariant by adding that many dummy entries at the end.
+    unsafe fn add_many_dummy_entries(&mut self, how_many: usize) {
+        self.vec.resize(
+            self.vec.len() + how_many,
+            IndexMapEntry {
+                index_in_key_vec: N::default(),
+                opsk_value: N::default(),
+            },
+        );
+    }
+
+    unsafe fn get_entry_at_map_index(&self, index_in_map: usize) -> (N, N) {
+        let entry = self.vec[index_in_map];
+        (entry.index_in_key_vec, entry.opsk_value)
+    }
+
+    unsafe fn set_entry_at_map_index(
+        &mut self,
+        index_in_map: usize,
+        index_in_key_vec: N,
+        opsk_value: N,
+    ) {
+        self.vec[index_in_map] = IndexMapEntry {
+            index_in_key_vec,
+            opsk_value,
+        };
+    }
+}
+
+pub(crate) struct AddManyEntries<'a> {
+    index_map: &'a mut IndexMap,
+    /// The adding of many entries via this API is only optimized because
+    /// we know before starting exactly how many entries will be added this way,
+    /// this counter enforces that this information was correct in the end.
+    remaining_entries_to_add_count: usize,
+    /// Next added entry must have a strictly smaller `index_in_key_vec`.
+    /// The entries must be added in order from biggest to smallest `index_in_key_vec`.
+    last_index_in_key_vec_added: Option<usize>,
+    /// Next entries (added or preserved) treated just now will be put one slot left to this one.
+    /// This goes from right to left.
+    /// If there are no slots on the left (it is 0) then we should be done anyway.
+    /// It starts at len (so at the beginning it is not a valid index).
+    last_index_in_map_for_treated_entries: usize,
+    /// Next preserved entries not yet treated will be taken one slot left to this one.
+    /// This goes from right to left.
+    /// If there are no slots on the left (it is 0) then there is no more old entries to preserve.
+    last_index_in_map_for_old_entries: usize,
+}
+
+impl<'a> AddManyEntries<'a> {
+    fn for_map(
+        index_map: &mut IndexMap,
+        how_many_entries_will_be_added: usize,
+    ) -> AddManyEntries<'_> {
+        let old_len = index_map.len();
+        // SAFETY: The `AddManyEntries` API makes sure that the "always sorted" invariant
+        // on IndexMap's vec of entries is respected at the end of the operation
+        // when `AddManyEntries::finish` is called and the map is not borrowed anymore.
+        unsafe { index_map.add_many_dummy_entries(how_many_entries_will_be_added) }
+        let new_len = index_map.len();
+        AddManyEntries {
+            index_map,
+            remaining_entries_to_add_count: how_many_entries_will_be_added,
+            last_index_in_key_vec_added: None,
+            last_index_in_map_for_treated_entries: new_len,
+            last_index_in_map_for_old_entries: old_len,
+        }
+    }
+
+    pub(crate) fn add_entry(&mut self, index_in_key_vec: usize, opsk: Opsk) {
+        assert!(
+            self.last_index_in_key_vec_added.is_none()
+                || self
+                    .last_index_in_key_vec_added
+                    .is_some_and(|last_index| index_in_key_vec < last_index),
+            "Bug: entries not added in descending order of their index in key vec"
+        );
+        // Preserve old entries that must be treated before the added entry.
+        #[allow(clippy::while_let_loop)]
+        loop {
+            let next_index_in_map_for_old_entries =
+                self.last_index_in_map_for_old_entries.checked_sub(1);
+            if let Some(next_index_in_map_for_old_entries) = next_index_in_map_for_old_entries {
+                let next_index_in_key_vec_to_preserve = {
+                    // SAFETY: TODO (it is not even that unsafe really)
+                    unsafe {
+                        self.index_map
+                            .get_entry_at_map_index(next_index_in_map_for_old_entries)
+                            .0
+                    }
+                };
+                debug_assert_ne!(index_in_key_vec, next_index_in_key_vec_to_preserve);
+                if index_in_key_vec < next_index_in_key_vec_to_preserve {
+                    self.preserve_one();
+                } else {
+                    // The added entry shall now be treated as its index in key vec
+                    // is bigger than the one of the next old entry to preserve.
+                    break;
+                }
+            } else {
+                // The added entry is threated now as there is no more old entries to preserve.
+                break;
+            }
+        }
+        // Treat the added entry.
+        let Some(next_index_in_map_for_treated_entries) =
+            self.last_index_in_map_for_treated_entries.checked_sub(1)
+        else {
+            debug_assert_eq!(self.remaining_entries_to_add_count, 0);
+            panic!("Bug: adding an entry more than the announced amount");
+        };
+        // SAFETY: TODO (the index is valid because <explanation lol>)
+        unsafe {
+            self.index_map.set_entry_at_map_index(
+                next_index_in_map_for_treated_entries,
+                index_in_key_vec,
+                opsk,
+            );
+        }
+        self.last_index_in_map_for_treated_entries = next_index_in_map_for_treated_entries;
+        self.last_index_in_key_vec_added = Some(index_in_key_vec);
+        self.remaining_entries_to_add_count = self
+            .remaining_entries_to_add_count
+            .checked_sub(1)
+            .expect("Bug: adding an entry more than the announced amount");
+    }
+
+    fn preserve_one(&mut self) {
+        //take the next old entry to preserve and put it at the insertion site
+        let next_index_in_map_for_old_entries = self.last_index_in_map_for_old_entries - 1;
+        let next_index_in_map_for_treated_entries = self.last_index_in_map_for_treated_entries - 1;
+        let entry = {
+            // SAFETY: TODO (the index is valid because <explanation lol>)
+            unsafe {
+                self.index_map
+                    .get_entry_at_map_index(next_index_in_map_for_old_entries)
+            }
+        };
+        // SAFETY: TODO (the index is valid because <explanation lol>)
+        unsafe {
+            self.index_map.set_entry_at_map_index(
+                next_index_in_map_for_treated_entries,
+                entry.0,
+                entry.1,
+            );
+        }
+        self.last_index_in_map_for_old_entries = next_index_in_map_for_old_entries;
+        self.last_index_in_map_for_treated_entries = next_index_in_map_for_treated_entries;
+    }
+
+    pub(crate) fn finish(self) {
+        if self.remaining_entries_to_add_count != 0 {
+            panic!("Bug: finishing AddManyEntries before adding the announced amount");
+        }
     }
 }
 
@@ -439,5 +724,97 @@ mod tests {
         assert_eq!(index_map.get(5), None);
         assert_eq!(index_map.get(6), Some(Opsk::with_value(0)));
         assert_eq!(index_map.get(7), None);
+    }
+
+    #[test]
+    fn add_many_entries() {
+        let mut index_map = IndexMap::new();
+        index_map.set(0, Opsk::with_value(0));
+        index_map.set(5, Opsk::with_value(5));
+        index_map.set(10000, Opsk::with_value(10000));
+        let mut add_many_entries = index_map.add_many_entries(20);
+        for i in (20..35).rev() {
+            add_many_entries.add_entry(i, Opsk::with_value(i));
+        }
+        add_many_entries.add_entry(10, Opsk::with_value(10));
+        add_many_entries.add_entry(9, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(8, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(7, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(2, Opsk::with_value(2));
+        add_many_entries.finish();
+        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(1), None);
+        assert_eq!(index_map.get(2), Some(Opsk::with_value(2)));
+        assert_eq!(index_map.get(5), Some(Opsk::with_value(5)));
+        assert_eq!(index_map.get(7), Some(Opsk::with_value(u32::MAX as usize)));
+        assert_eq!(index_map.get(8), Some(Opsk::with_value(u32::MAX as usize)));
+        assert_eq!(index_map.get(9), Some(Opsk::with_value(u32::MAX as usize)));
+        assert_eq!(index_map.get(10), Some(Opsk::with_value(10)));
+        assert_eq!(index_map.get(19), None);
+        for i in 20..35 {
+            assert_eq!(index_map.get(i), Some(Opsk::with_value(i)));
+        }
+        assert_eq!(index_map.get(35), None);
+        assert_eq!(index_map.get(10000), Some(Opsk::with_value(10000)));
+    }
+
+    #[test]
+    #[should_panic]
+    fn add_many_entries_but_not_in_the_right_order() {
+        let mut index_map = IndexMap::new();
+        index_map.set(0, Opsk::with_value(0));
+        index_map.set(5, Opsk::with_value(5));
+        index_map.set(10000, Opsk::with_value(10000));
+        let mut add_many_entries = index_map.add_many_entries(20);
+        for i in (20..35).rev() {
+            add_many_entries.add_entry(i, Opsk::with_value(i));
+        }
+        add_many_entries.add_entry(9, Opsk::with_value(u32::MAX as usize));
+        // Aha! Wrong order here, the indices should only be descending.
+        add_many_entries.add_entry(10, Opsk::with_value(10));
+        add_many_entries.add_entry(8, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(7, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(2, Opsk::with_value(2));
+        add_many_entries.finish();
+    }
+
+    #[test]
+    #[should_panic]
+    fn add_many_entries_but_not_enough() {
+        let mut index_map = IndexMap::new();
+        index_map.set(0, Opsk::with_value(0));
+        index_map.set(5, Opsk::with_value(5));
+        index_map.set(10000, Opsk::with_value(10000));
+        let mut add_many_entries = index_map.add_many_entries(20);
+        for i in (20..35).rev() {
+            add_many_entries.add_entry(i, Opsk::with_value(i));
+        }
+        add_many_entries.add_entry(10, Opsk::with_value(10));
+        add_many_entries.add_entry(9, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(8, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(7, Opsk::with_value(u32::MAX as usize));
+        // We are still missing one.
+        add_many_entries.finish();
+    }
+
+    #[test]
+    #[should_panic]
+    fn add_many_entries_but_too_many() {
+        let mut index_map = IndexMap::new();
+        index_map.set(0, Opsk::with_value(0));
+        index_map.set(5, Opsk::with_value(5));
+        index_map.set(10000, Opsk::with_value(10000));
+        let mut add_many_entries = index_map.add_many_entries(20);
+        for i in (20..35).rev() {
+            add_many_entries.add_entry(i, Opsk::with_value(i));
+        }
+        add_many_entries.add_entry(10, Opsk::with_value(10));
+        add_many_entries.add_entry(9, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(8, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(7, Opsk::with_value(u32::MAX as usize));
+        add_many_entries.add_entry(2, Opsk::with_value(2));
+        // One too many.
+        add_many_entries.add_entry(1, Opsk::with_value(1));
+        add_many_entries.finish();
     }
 }

@@ -1,8 +1,11 @@
+//! `OutPalVec` is like `PalVec` but with an optimization that reduces pressure on keys size
+//! in exchange for worse performances in some cases.
+
 use std::{marker::PhantomData, num::NonZeroUsize, ops::Index};
 
 use crate::{
     index_map::IndexMap,
-    key::{Key, KeyAllocator, Opsk, OpskAllocator},
+    key::{Key, KeyAllocator, Opsk, OpskAllocator, PaletteKeyType},
     key_vec::KeyVec,
     palette::Palette,
     utils::view_to_owned::ViewToOwned,
@@ -272,7 +275,7 @@ where
         let palette_entry = self
             .outlier_palette
             .remove_entry(opsk_to_move)
-            .expect("Bug: We just got this opsk for the outlier palette");
+            .expect("Bug: We just got this opsk from the outlier palette");
         if self.outlier_palette.len() == 0 {
             // There are no outliers anymore, we can make the outlier key available.
             self.outlier_key = None;
@@ -288,6 +291,81 @@ where
             .remove_all_with_opsk(opsk_to_move, |index| {
                 self.key_vec.set(index, new_key);
             });
+    }
+
+    fn move_least_numerous_common_to_outlier(&mut self) {
+        let Some(key_to_move) = self.common_palette.key_of_least_instanced_element() else {
+            return;
+        };
+        let highest_key_value = if let Some(outlier_key) = self.outlier_key {
+            self.common_palette.len().max(outlier_key.value)
+        } else {
+            self.common_palette.len()
+        };
+        let mut key_rewriting_map: Vec<Option<Key>> = vec![None; highest_key_value];
+        let palette_entry = self
+            .common_palette
+            .remove_entry(key_to_move)
+            .expect("Bug: We just got this key from the common palette");
+        let how_many_entries_to_add_to_index_map = palette_entry.count();
+        if self.outlier_key.is_none() {
+            let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
+                key_vec: &mut self.key_vec,
+                reserved_key: self.outlier_key,
+            });
+            self.key_vec.make_sure_a_key_fits(outlier_key);
+            self.outlier_key = Some(outlier_key);
+        }
+        let new_opsk = self
+            .outlier_palette
+            .add_entry(palette_entry, &mut OpskAllocator);
+        key_rewriting_map[key_to_move.value] = Some(self.outlier_key.unwrap());
+        loop {
+            let highest_key_value = if let Some(outlier_key) = self.outlier_key {
+                self.common_palette.len().max(outlier_key.value)
+            } else {
+                self.common_palette.len()
+            };
+            let available_key = self.common_palette.smallest_available_key(&KeyAllocator {
+                key_vec: &mut self.key_vec,
+                reserved_key: self.outlier_key,
+            });
+            if highest_key_value <= available_key.value {
+                break;
+            } else if self
+                .outlier_key
+                .is_some_and(|outlier_key| outlier_key.value == highest_key_value)
+            {
+                key_rewriting_map[self.outlier_key.unwrap().value] = Some(available_key);
+                key_rewriting_map[key_to_move.value] = Some(available_key);
+            } else {
+                let palette_entry = self
+                    .common_palette
+                    .remove_entry(Key::with_value(highest_key_value))
+                    .expect("Bug: We just got this key from the common palette");
+                let new_key_for_this_entry = self.common_palette.add_entry(
+                    palette_entry,
+                    &mut KeyAllocator {
+                        key_vec: &mut self.key_vec,
+                        reserved_key: self.outlier_key,
+                    },
+                );
+                key_rewriting_map[highest_key_value] = Some(new_key_for_this_entry);
+            }
+        }
+        let mut add_many_entries_to_index_map = self
+            .index_to_opsk_map
+            .add_many_entries(how_many_entries_to_add_to_index_map);
+        for index in (0..self.key_vec.len()).rev() {
+            let key = self.key_vec.get(index).unwrap();
+            if let Some(new_key) = key_rewriting_map[key.value] {
+                self.key_vec.set(index, new_key);
+                if Some(new_key) == self.outlier_key {
+                    add_many_entries_to_index_map.add_entry(index, new_opsk);
+                }
+            }
+        }
+        add_many_entries_to_index_map.finish();
     }
 
     fn outlier_ratio(&self) -> Option<f32> {
@@ -503,5 +581,39 @@ mod tests {
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
         assert_eq!(palvec.len(), 2);
+    }
+
+    #[test]
+    fn move_least_numerous_common_to_outlier() {
+        let mut palvec: OutPalVec<i32> = OutPalVec::with_len(0, 20);
+        palvec.set(10, 0);
+        palvec.set(11, 1);
+        palvec.set(12, 1);
+        palvec.set(13, 2);
+        palvec.move_least_numerous_common_to_outlier();
+        assert_eq!(palvec.get(0), Some(&0));
+        assert_eq!(palvec.get(19), Some(&0));
+        assert_eq!(palvec.get(10), Some(&0));
+        assert_eq!(palvec.get(11), Some(&1));
+        assert_eq!(palvec.get(12), Some(&1));
+        assert_eq!(palvec.get(13), Some(&2));
+    }
+
+    #[test]
+    fn move_least_numerous_common_to_outlier_2() {
+        let mut palvec: OutPalVec<usize> = OutPalVec::with_len(42, 100 * 100);
+        for i in 0..100 {
+            for j in 0..100 {
+                palvec.set(i * 100 + j, i * 100);
+            }
+        }
+        for _k in 0..50 {
+            for i in 0..100 {
+                for j in 0..100 {
+                    assert_eq!(palvec.get(i * 100 + j), Some(&(i * 100)));
+                }
+            }
+            palvec.move_least_numerous_common_to_outlier();
+        }
     }
 }
