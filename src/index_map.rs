@@ -7,9 +7,59 @@
 // TODO: There is in fact no valid situation in which an `opsk_value` requires number size growth
 // while the `index_in_key_vec` doesn't.
 
-use std::fmt::Debug;
+use std::{cmp::Ordering, fmt::Debug};
 
 use crate::key::{Opsk, PaletteKeyType};
+
+/// Allows faster access by providing hints to the index in the index map to where
+/// the access to the entry with some given index in the key vec is.
+///
+/// Without hint, a binary search is performed.
+pub(crate) enum IndexMapAccessOptimizer<'a> {
+    /// Provides no hint, regular binary search will be used.
+    None,
+    /// Provides an index (in map) hint.
+    ///
+    /// If the access falls into one of the following 3 cases then binary search is skipped:
+    /// - Hinted index is the one accessed.
+    /// - Hinted index is adjacent to the one accessed.
+    /// - The access is for insertion between the hinted index and an adjacent index.
+    ///
+    /// If the access was not one of these cases then regular binary search is used,
+    /// thus a "wrong hint" causes no issue worse than small performance loss.
+    ///
+    /// The accessed index is written in `self` so that next access can use the current access
+    /// as a hint (which will be useful if the next access is made at the same index or at
+    /// an adjacent index, for example when iterating).
+    Local(&'a mut IndexMapLocalAccessOptimizer),
+    /// Indicates that the access will be for insertion at the end of the index map.
+    /// **Panics if it is not the case.**
+    ///
+    /// When pushing in the `OutPalVec` then this is a good access hint.
+    Push,
+    /// Indicates that the access will be the last valid index of the index map.
+    /// **Panics if it is not the case.**
+    ///
+    /// When popping from the `OutPalVec` then this is a good access hint.
+    Pop,
+}
+
+/// Mutable index that helps local sequences of access
+/// take adventage of the sorting of the map to skip the binary search
+/// and find in O(1) and in a cache friendly manner the requested OPSK.
+pub(crate) struct IndexMapLocalAccessOptimizer {
+    /// Can be out of bounds, it doesn't matter,
+    /// it is just a hint that can help skip the binary search or not.
+    last_index_in_map: usize,
+}
+
+impl IndexMapLocalAccessOptimizer {
+    pub(crate) fn new() -> IndexMapLocalAccessOptimizer {
+        IndexMapLocalAccessOptimizer {
+            last_index_in_map: 0,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct IndexMap {
@@ -82,7 +132,12 @@ impl IndexMap {
         (self.len() - how_many) * self.entry_size()
     }
 
-    pub(crate) fn set(&mut self, index_in_key_vec: usize, opsk: Opsk) -> Option<Opsk> {
+    pub(crate) fn set(
+        &mut self,
+        index_in_key_vec: usize,
+        opsk: Opsk,
+        access: &mut IndexMapAccessOptimizer,
+    ) -> Option<Opsk> {
         match &mut self.inner {
             IndexMapEnum::U16(map_sized_u16) => {
                 let max = index_in_key_vec.max(opsk.value);
@@ -90,10 +145,11 @@ impl IndexMap {
                     self.grow_number_size_to_accomodate(max);
                     // Re-run the match, it is no longer u16.
                     // This is a super rare path so it is ok if it is dumb.
-                    return self.set(index_in_key_vec, opsk);
+                    return self.set(index_in_key_vec, opsk, access);
                 }
                 // We made sure these values fit in the current number type.
-                let previous = map_sized_u16.set(index_in_key_vec as u16, opsk.value as u16);
+                let previous =
+                    map_sized_u16.set(index_in_key_vec as u16, opsk.value as u16, access);
                 previous.map(|opsk_value| Opsk::with_value(opsk_value as usize))
             }
             IndexMapEnum::U32(map_sized_u32) => {
@@ -102,59 +158,69 @@ impl IndexMap {
                     self.grow_number_size_to_accomodate(max);
                     // Re-run the match, it is no longer u32.
                     // This is a super rare path so it is ok if it is dumb.
-                    return self.set(index_in_key_vec, opsk);
+                    return self.set(index_in_key_vec, opsk, access);
                 }
                 // We made sure these values fit in the current number type.
-                let previous = map_sized_u32.set(index_in_key_vec as u32, opsk.value as u32);
+                let previous =
+                    map_sized_u32.set(index_in_key_vec as u32, opsk.value as u32, access);
                 previous.map(|opsk_value| Opsk::with_value(opsk_value as usize))
             }
             IndexMapEnum::U64(map_sized_u64) => {
-                let previous = map_sized_u64.set(index_in_key_vec as u64, opsk.value as u64);
+                let previous =
+                    map_sized_u64.set(index_in_key_vec as u64, opsk.value as u64, access);
                 previous.map(|opsk_value| Opsk::with_value(opsk_value as usize))
             }
         }
     }
 
-    pub(crate) fn get(&self, index_in_key_vec: usize) -> Option<Opsk> {
+    pub(crate) fn get(
+        &self,
+        index_in_key_vec: usize,
+        access: &mut IndexMapAccessOptimizer,
+    ) -> Option<Opsk> {
         match &self.inner {
             IndexMapEnum::U16(map_sized_u16) => {
                 // If the index doesn't fit in the current number type then it is out of bounds.
                 let index_in_key_vec: u16 = index_in_key_vec.try_into().ok()?;
                 map_sized_u16
-                    .get(index_in_key_vec)
+                    .get(index_in_key_vec, access)
                     .map(|opsk_value| Opsk::with_value(opsk_value as usize))
             }
             IndexMapEnum::U32(map_sized_u32) => {
                 // If the index doesn't fit in the current number type then it is out of bounds.
                 let index_in_key_vec: u32 = index_in_key_vec.try_into().ok()?;
                 map_sized_u32
-                    .get(index_in_key_vec)
+                    .get(index_in_key_vec, access)
                     .map(|opsk_value| Opsk::with_value(opsk_value as usize))
             }
             IndexMapEnum::U64(map_sized_u64) => map_sized_u64
-                .get(index_in_key_vec as u64)
+                .get(index_in_key_vec as u64, access)
                 .map(|opsk_value| Opsk::with_value(opsk_value as usize)),
         }
     }
 
-    pub(crate) fn remove(&mut self, index_in_key_vec: usize) -> Option<Opsk> {
+    pub(crate) fn remove(
+        &mut self,
+        index_in_key_vec: usize,
+        access: &mut IndexMapAccessOptimizer,
+    ) -> Option<Opsk> {
         match &mut self.inner {
             IndexMapEnum::U16(map_sized_u16) => {
                 // If the index doesn't fit in the current number type then it is out of bounds.
                 let index_in_key_vec: u16 = index_in_key_vec.try_into().ok()?;
                 map_sized_u16
-                    .remove(index_in_key_vec)
+                    .remove(index_in_key_vec, access)
                     .map(|opsk_value| Opsk::with_value(opsk_value as usize))
             }
             IndexMapEnum::U32(map_sized_u32) => {
                 // If the index doesn't fit in the current number type then it is out of bounds.
                 let index_in_key_vec: u32 = index_in_key_vec.try_into().ok()?;
                 map_sized_u32
-                    .remove(index_in_key_vec)
+                    .remove(index_in_key_vec, access)
                     .map(|opsk_value| Opsk::with_value(opsk_value as usize))
             }
             IndexMapEnum::U64(map_sized_u64) => map_sized_u64
-                .remove(index_in_key_vec as u64)
+                .remove(index_in_key_vec as u64, access)
                 .map(|opsk_value| Opsk::with_value(opsk_value as usize)),
         }
     }
@@ -306,7 +372,7 @@ impl IndexMap {
 
 trait NumberType
 where
-    Self: Clone + Copy + Ord + TryFrom<usize> + TryInto<usize> + Default,
+    Self: Clone + Copy + Ord + TryFrom<usize> + TryInto<usize> + Default + Debug,
 {
 }
 impl NumberType for u16 {}
@@ -369,10 +435,89 @@ where
         self.vec.capacity()
     }
 
-    fn set(&mut self, index_in_key_vec: N, opsk_value: N) -> Option<N> {
-        let index_in_map = self
-            .vec
-            .binary_search_by_key(&index_in_key_vec, |entry| entry.index_in_key_vec);
+    fn access(
+        &self,
+        index_in_key_vec: N,
+        access: &mut IndexMapAccessOptimizer,
+    ) -> Result<usize, usize> {
+        let index_in_map = (match access {
+            IndexMapAccessOptimizer::Local(ref access) => {
+                let try_index = access.last_index_in_map;
+                if let Some(entry) = self.vec.get(try_index) {
+                    match entry.index_in_key_vec.cmp(&index_in_key_vec) {
+                        Ordering::Equal => Some(Ok(try_index)),
+                        Ordering::Greater => {
+                            if let Some(previous_entry) = self.vec.get(try_index - 1) {
+                                match previous_entry.index_in_key_vec.cmp(&index_in_key_vec) {
+                                    Ordering::Equal => Some(Ok(try_index - 1)),
+                                    Ordering::Less => Some(Err(try_index)),
+                                    Ordering::Greater => None,
+                                }
+                            } else {
+                                Some(Err(0))
+                            }
+                        }
+                        Ordering::Less => {
+                            if let Some(next_entry) = self.vec.get(try_index + 1) {
+                                match next_entry.index_in_key_vec.cmp(&index_in_key_vec) {
+                                    Ordering::Equal => Some(Ok(try_index + 1)),
+                                    Ordering::Greater => Some(Err(try_index + 1)),
+                                    Ordering::Less => None,
+                                }
+                            } else {
+                                Some(Err(self.vec.len()))
+                            }
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            IndexMapAccessOptimizer::Push => {
+                let len = self.vec.len();
+                if let Some(last_index) = len.checked_sub(1) {
+                    let last_entry = self.vec.get(last_index).unwrap();
+                    assert!(
+                        last_entry.index_in_key_vec < index_in_key_vec,
+                        "Bug: Push hint used with an index_in_key_vec before the last"
+                    );
+                }
+                Some(Err(len))
+            }
+            IndexMapAccessOptimizer::Pop => {
+                let len = self.vec.len();
+                if let Some(last_index) = len.checked_sub(1) {
+                    let last_entry = self.vec.get(last_index).unwrap();
+                    assert_eq!(
+                        last_entry.index_in_key_vec, index_in_key_vec,
+                        "Bug: Pop hint used with an index_in_key_vec not equal to the last"
+                    );
+                    Some(Ok(last_index))
+                } else {
+                    None
+                }
+            }
+            IndexMapAccessOptimizer::None => None,
+        })
+        .unwrap_or_else(|| {
+            self.vec
+                .binary_search_by_key(&index_in_key_vec, |entry| entry.index_in_key_vec)
+        });
+        if let IndexMapAccessOptimizer::Local(access) = access {
+            match index_in_map {
+                Ok(index_in_map) | Err(index_in_map) => access.last_index_in_map = index_in_map,
+            }
+        }
+        index_in_map
+    }
+
+    fn set(
+        &mut self,
+        index_in_key_vec: N,
+        opsk_value: N,
+        access: &mut IndexMapAccessOptimizer,
+    ) -> Option<N> {
+        let index_in_map = self.access(index_in_key_vec, access);
         match index_in_map {
             Ok(index_in_map) => {
                 let entry = self.vec.get_mut(index_in_map).unwrap();
@@ -393,19 +538,13 @@ where
         }
     }
 
-    fn get(&self, index_in_key_vec: N) -> Option<N> {
-        let index_in_map = self
-            .vec
-            .binary_search_by_key(&index_in_key_vec, |entry| entry.index_in_key_vec)
-            .ok()?;
+    fn get(&self, index_in_key_vec: N, access: &mut IndexMapAccessOptimizer) -> Option<N> {
+        let index_in_map = self.access(index_in_key_vec, access).ok()?;
         Some(self.vec[index_in_map].opsk_value)
     }
 
-    fn remove(&mut self, index_in_key_vec: N) -> Option<N> {
-        let index_in_map = self
-            .vec
-            .binary_search_by_key(&index_in_key_vec, |entry| entry.index_in_key_vec)
-            .ok()?;
+    fn remove(&mut self, index_in_key_vec: N, access: &mut IndexMapAccessOptimizer) -> Option<N> {
+        let index_in_map = self.access(index_in_key_vec, access).ok()?;
         Some(self.vec.remove(index_in_map).opsk_value)
     }
 
@@ -594,83 +733,96 @@ impl<'a> AddManyEntries<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use IndexMapAccessOptimizer as A;
 
     #[test]
     fn access_empty_returns_none() {
         let index_map = IndexMap::new();
-        assert_eq!(index_map.get(0), None);
+        assert_eq!(index_map.get(0, &mut A::None), None);
     }
 
     #[test]
     fn set_and_get() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(1, Opsk::with_value(1));
-        index_map.set(2, Opsk::with_value(50));
-        index_map.set(70, Opsk::with_value(50));
-        index_map.set(3, Opsk::with_value(50));
-        index_map.set(8, Opsk::with_value(100));
-        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
-        assert_eq!(index_map.get(1), Some(Opsk::with_value(1)));
-        assert_eq!(index_map.get(2), Some(Opsk::with_value(50)));
-        assert_eq!(index_map.get(3), Some(Opsk::with_value(50)));
-        assert_eq!(index_map.get(8), Some(Opsk::with_value(100)));
-        assert_eq!(index_map.get(70), Some(Opsk::with_value(50)));
-        assert_eq!(index_map.get(4), None);
-        assert_eq!(index_map.get(69), None);
-        assert_eq!(index_map.get(71), None);
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(1, Opsk::with_value(1), &mut A::None);
+        index_map.set(2, Opsk::with_value(50), &mut A::None);
+        index_map.set(70, Opsk::with_value(50), &mut A::None);
+        index_map.set(3, Opsk::with_value(50), &mut A::None);
+        index_map.set(8, Opsk::with_value(100), &mut A::None);
+        assert_eq!(index_map.get(0, &mut A::None), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(1, &mut A::None), Some(Opsk::with_value(1)));
+        assert_eq!(index_map.get(2, &mut A::None), Some(Opsk::with_value(50)));
+        assert_eq!(index_map.get(3, &mut A::None), Some(Opsk::with_value(50)));
+        assert_eq!(index_map.get(8, &mut A::None), Some(Opsk::with_value(100)));
+        assert_eq!(index_map.get(70, &mut A::None), Some(Opsk::with_value(50)));
+        assert_eq!(index_map.get(4, &mut A::None), None);
+        assert_eq!(index_map.get(69, &mut A::None), None);
+        assert_eq!(index_map.get(71, &mut A::None), None);
     }
 
     #[test]
     fn doesnt_grow_if_not_needed() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(u16::MAX as usize, Opsk::with_value(u16::MAX as usize));
-        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(
+            u16::MAX as usize,
+            Opsk::with_value(u16::MAX as usize),
+            &mut A::None,
+        );
+        assert_eq!(index_map.get(0, &mut A::None), Some(Opsk::with_value(0)));
         assert_eq!(
-            index_map.get(u16::MAX as usize),
+            index_map.get(u16::MAX as usize, &mut A::None),
             Some(Opsk::with_value(u16::MAX as usize))
         );
-        assert_eq!(index_map.get(1), None);
-        assert_eq!(index_map.get(u16::MAX as usize - 1), None);
+        assert_eq!(index_map.get(1, &mut A::None), None);
+        assert_eq!(index_map.get(u16::MAX as usize - 1, &mut A::None), None);
         assert!(matches!(index_map.inner, IndexMapEnum::U16(_)));
     }
 
     #[test]
     fn grows_if_needed() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(u16::MAX as usize, Opsk::with_value(u16::MAX as usize));
-        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(
+            u16::MAX as usize,
+            Opsk::with_value(u16::MAX as usize),
+            &mut A::None,
+        );
+        assert_eq!(index_map.get(0, &mut A::None), Some(Opsk::with_value(0)));
         assert_eq!(
-            index_map.get(u16::MAX as usize),
+            index_map.get(u16::MAX as usize, &mut A::None),
             Some(Opsk::with_value(u16::MAX as usize))
         );
-        assert_eq!(index_map.get(1), None);
-        assert_eq!(index_map.get(u16::MAX as usize - 1), None);
+        assert_eq!(index_map.get(1, &mut A::None), None);
+        assert_eq!(index_map.get(u16::MAX as usize - 1, &mut A::None), None);
         assert!(matches!(index_map.inner, IndexMapEnum::U16(_)));
 
-        index_map.set(u16::MAX as usize + 1, Opsk::with_value(42));
+        index_map.set(u16::MAX as usize + 1, Opsk::with_value(42), &mut A::None);
         assert!(matches!(index_map.inner, IndexMapEnum::U32(_)));
-        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(0, &mut A::None), Some(Opsk::with_value(0)));
         assert_eq!(
-            index_map.get(u16::MAX as usize),
+            index_map.get(u16::MAX as usize, &mut A::None),
             Some(Opsk::with_value(u16::MAX as usize))
         );
-        assert_eq!(index_map.get(1), None);
-        assert_eq!(index_map.get(u16::MAX as usize - 1), None);
+        assert_eq!(index_map.get(1, &mut A::None), None);
+        assert_eq!(index_map.get(u16::MAX as usize - 1, &mut A::None), None);
         assert_eq!(
-            index_map.get(u16::MAX as usize + 1),
+            index_map.get(u16::MAX as usize + 1, &mut A::None),
             Some(Opsk::with_value(42))
         );
-        index_map.set(u32::MAX as usize, Opsk::with_value(u32::MAX as usize));
+        index_map.set(
+            u32::MAX as usize,
+            Opsk::with_value(u32::MAX as usize),
+            &mut A::None,
+        );
         assert!(matches!(index_map.inner, IndexMapEnum::U32(_)));
 
-        index_map.set(u32::MAX as usize + 1, Opsk::with_value(3));
+        index_map.set(u32::MAX as usize + 1, Opsk::with_value(3), &mut A::None);
         assert!(matches!(index_map.inner, IndexMapEnum::U64(_)));
-        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(0, &mut A::None), Some(Opsk::with_value(0)));
         assert_eq!(
-            index_map.get(u32::MAX as usize + 1),
+            index_map.get(u32::MAX as usize + 1, &mut A::None),
             Some(Opsk::with_value(3))
         );
     }
@@ -678,9 +830,13 @@ mod tests {
     #[test]
     fn can_fit_max_values() {
         let mut index_map = IndexMap::new();
-        index_map.set(u64::MAX as usize, Opsk::with_value(u64::MAX as usize));
+        index_map.set(
+            u64::MAX as usize,
+            Opsk::with_value(u64::MAX as usize),
+            &mut A::None,
+        );
         assert_eq!(
-            index_map.get(u64::MAX as usize),
+            index_map.get(u64::MAX as usize, &mut A::None),
             Some(Opsk::with_value(u64::MAX as usize))
         );
     }
@@ -688,50 +844,59 @@ mod tests {
     #[test]
     fn remove() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(1, Opsk::with_value(2));
-        index_map.set(10, Opsk::with_value(20));
-        index_map.set(100, Opsk::with_value(200));
-        index_map.set(1000, Opsk::with_value(2000));
-        index_map.set(10000, Opsk::with_value(20000));
-        assert_eq!(index_map.remove(1), Some(Opsk::with_value(2)));
-        assert_eq!(index_map.remove(1000), Some(Opsk::with_value(2000)));
-        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
-        assert_eq!(index_map.get(1), None);
-        assert_eq!(index_map.get(10), Some(Opsk::with_value(20)));
-        assert_eq!(index_map.get(100), Some(Opsk::with_value(200)));
-        assert_eq!(index_map.get(1000), None);
-        assert_eq!(index_map.get(10000), Some(Opsk::with_value(20000)));
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(1, Opsk::with_value(2), &mut A::None);
+        index_map.set(10, Opsk::with_value(20), &mut A::None);
+        index_map.set(100, Opsk::with_value(200), &mut A::None);
+        index_map.set(1000, Opsk::with_value(2000), &mut A::None);
+        index_map.set(10000, Opsk::with_value(20000), &mut A::None);
+        assert_eq!(index_map.remove(1, &mut A::None), Some(Opsk::with_value(2)));
+        assert_eq!(
+            index_map.remove(1000, &mut A::None),
+            Some(Opsk::with_value(2000))
+        );
+        assert_eq!(index_map.get(0, &mut A::None), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(1, &mut A::None), None);
+        assert_eq!(index_map.get(10, &mut A::None), Some(Opsk::with_value(20)));
+        assert_eq!(
+            index_map.get(100, &mut A::None),
+            Some(Opsk::with_value(200))
+        );
+        assert_eq!(index_map.get(1000, &mut A::None), None);
+        assert_eq!(
+            index_map.get(10000, &mut A::None),
+            Some(Opsk::with_value(20000))
+        );
     }
 
     #[test]
     fn remove_all_with_opsk() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(1, Opsk::with_value(0));
-        index_map.set(2, Opsk::with_value(1));
-        index_map.set(3, Opsk::with_value(1));
-        index_map.set(4, Opsk::with_value(0));
-        index_map.set(5, Opsk::with_value(1));
-        index_map.set(6, Opsk::with_value(0));
-        index_map.set(7, Opsk::with_value(1));
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(1, Opsk::with_value(0), &mut A::None);
+        index_map.set(2, Opsk::with_value(1), &mut A::None);
+        index_map.set(3, Opsk::with_value(1), &mut A::None);
+        index_map.set(4, Opsk::with_value(0), &mut A::None);
+        index_map.set(5, Opsk::with_value(1), &mut A::None);
+        index_map.set(6, Opsk::with_value(0), &mut A::None);
+        index_map.set(7, Opsk::with_value(1), &mut A::None);
         index_map.remove_all_with_opsk(Opsk::with_value(1), |_index_in_key_vec| {});
-        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
-        assert_eq!(index_map.get(1), Some(Opsk::with_value(0)));
-        assert_eq!(index_map.get(2), None);
-        assert_eq!(index_map.get(3), None);
-        assert_eq!(index_map.get(4), Some(Opsk::with_value(0)));
-        assert_eq!(index_map.get(5), None);
-        assert_eq!(index_map.get(6), Some(Opsk::with_value(0)));
-        assert_eq!(index_map.get(7), None);
+        assert_eq!(index_map.get(0, &mut A::None), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(1, &mut A::None), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(2, &mut A::None), None);
+        assert_eq!(index_map.get(3, &mut A::None), None);
+        assert_eq!(index_map.get(4, &mut A::None), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(5, &mut A::None), None);
+        assert_eq!(index_map.get(6, &mut A::None), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(7, &mut A::None), None);
     }
 
     #[test]
     fn add_many_entries() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(5, Opsk::with_value(5));
-        index_map.set(10000, Opsk::with_value(10000));
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(5, Opsk::with_value(5), &mut A::None);
+        index_map.set(10000, Opsk::with_value(10000), &mut A::None);
         let mut add_many_entries = index_map.add_many_entries(20);
         for i in (20..35).rev() {
             add_many_entries.add_entry(i, Opsk::with_value(i));
@@ -742,29 +907,41 @@ mod tests {
         add_many_entries.add_entry(7, Opsk::with_value(u32::MAX as usize));
         add_many_entries.add_entry(2, Opsk::with_value(2));
         add_many_entries.finish();
-        assert_eq!(index_map.get(0), Some(Opsk::with_value(0)));
-        assert_eq!(index_map.get(1), None);
-        assert_eq!(index_map.get(2), Some(Opsk::with_value(2)));
-        assert_eq!(index_map.get(5), Some(Opsk::with_value(5)));
-        assert_eq!(index_map.get(7), Some(Opsk::with_value(u32::MAX as usize)));
-        assert_eq!(index_map.get(8), Some(Opsk::with_value(u32::MAX as usize)));
-        assert_eq!(index_map.get(9), Some(Opsk::with_value(u32::MAX as usize)));
-        assert_eq!(index_map.get(10), Some(Opsk::with_value(10)));
-        assert_eq!(index_map.get(19), None);
+        assert_eq!(index_map.get(0, &mut A::None), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(1, &mut A::None), None);
+        assert_eq!(index_map.get(2, &mut A::None), Some(Opsk::with_value(2)));
+        assert_eq!(index_map.get(5, &mut A::None), Some(Opsk::with_value(5)));
+        assert_eq!(
+            index_map.get(7, &mut A::None),
+            Some(Opsk::with_value(u32::MAX as usize))
+        );
+        assert_eq!(
+            index_map.get(8, &mut A::None),
+            Some(Opsk::with_value(u32::MAX as usize))
+        );
+        assert_eq!(
+            index_map.get(9, &mut A::None),
+            Some(Opsk::with_value(u32::MAX as usize))
+        );
+        assert_eq!(index_map.get(10, &mut A::None), Some(Opsk::with_value(10)));
+        assert_eq!(index_map.get(19, &mut A::None), None);
         for i in 20..35 {
-            assert_eq!(index_map.get(i), Some(Opsk::with_value(i)));
+            assert_eq!(index_map.get(i, &mut A::None), Some(Opsk::with_value(i)));
         }
-        assert_eq!(index_map.get(35), None);
-        assert_eq!(index_map.get(10000), Some(Opsk::with_value(10000)));
+        assert_eq!(index_map.get(35, &mut A::None), None);
+        assert_eq!(
+            index_map.get(10000, &mut A::None),
+            Some(Opsk::with_value(10000))
+        );
     }
 
     #[test]
     #[should_panic]
     fn add_many_entries_but_not_in_the_right_order() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(5, Opsk::with_value(5));
-        index_map.set(10000, Opsk::with_value(10000));
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(5, Opsk::with_value(5), &mut A::None);
+        index_map.set(10000, Opsk::with_value(10000), &mut A::None);
         let mut add_many_entries = index_map.add_many_entries(20);
         for i in (20..35).rev() {
             add_many_entries.add_entry(i, Opsk::with_value(i));
@@ -782,9 +959,9 @@ mod tests {
     #[should_panic]
     fn add_many_entries_but_not_enough() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(5, Opsk::with_value(5));
-        index_map.set(10000, Opsk::with_value(10000));
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(5, Opsk::with_value(5), &mut A::None);
+        index_map.set(10000, Opsk::with_value(10000), &mut A::None);
         let mut add_many_entries = index_map.add_many_entries(20);
         for i in (20..35).rev() {
             add_many_entries.add_entry(i, Opsk::with_value(i));
@@ -801,9 +978,9 @@ mod tests {
     #[should_panic]
     fn add_many_entries_but_too_many() {
         let mut index_map = IndexMap::new();
-        index_map.set(0, Opsk::with_value(0));
-        index_map.set(5, Opsk::with_value(5));
-        index_map.set(10000, Opsk::with_value(10000));
+        index_map.set(0, Opsk::with_value(0), &mut A::None);
+        index_map.set(5, Opsk::with_value(5), &mut A::None);
+        index_map.set(10000, Opsk::with_value(10000), &mut A::None);
         let mut add_many_entries = index_map.add_many_entries(20);
         for i in (20..35).rev() {
             add_many_entries.add_entry(i, Opsk::with_value(i));
@@ -816,5 +993,57 @@ mod tests {
         // One too many.
         add_many_entries.add_entry(1, Opsk::with_value(1));
         add_many_entries.finish();
+    }
+
+    #[test]
+    fn access_hint() {
+        let mut index_map = IndexMap::new();
+        let mut local_access = IndexMapLocalAccessOptimizer::new();
+        let mut access = IndexMapAccessOptimizer::Local(&mut local_access);
+        index_map.set(0, Opsk::with_value(0), &mut access);
+        index_map.set(1, Opsk::with_value(1), &mut access);
+        index_map.set(2, Opsk::with_value(50), &mut access);
+        index_map.set(70, Opsk::with_value(50), &mut access);
+        index_map.set(3, Opsk::with_value(50), &mut access);
+        index_map.set(8, Opsk::with_value(100), &mut access);
+        assert_eq!(index_map.get(0, &mut access), Some(Opsk::with_value(0)));
+        assert_eq!(index_map.get(1, &mut access), Some(Opsk::with_value(1)));
+        assert_eq!(index_map.get(2, &mut access), Some(Opsk::with_value(50)));
+        assert_eq!(index_map.get(3, &mut access), Some(Opsk::with_value(50)));
+        assert_eq!(index_map.get(8, &mut access), Some(Opsk::with_value(100)));
+        assert_eq!(index_map.get(70, &mut access), Some(Opsk::with_value(50)));
+        assert_eq!(index_map.get(4, &mut access), None);
+        assert_eq!(index_map.get(69, &mut access), None);
+        assert_eq!(index_map.get(71, &mut access), None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn wrong_push_access_hint_crashes() {
+        let mut index_map = IndexMap::new();
+        let mut local_access = IndexMapLocalAccessOptimizer::new();
+        let mut access = IndexMapAccessOptimizer::Local(&mut local_access);
+        index_map.set(0, Opsk::with_value(0), &mut access);
+        index_map.set(1, Opsk::with_value(1), &mut access);
+        index_map.set(2, Opsk::with_value(50), &mut access);
+        index_map.set(70, Opsk::with_value(50), &mut access);
+        // Wrong hint!
+        index_map.set(3, Opsk::with_value(50), &mut IndexMapAccessOptimizer::Push);
+        index_map.set(8, Opsk::with_value(100), &mut access);
+    }
+
+    #[test]
+    #[should_panic]
+    fn wrong_pop_access_hint_crashes() {
+        let mut index_map = IndexMap::new();
+        let mut local_access = IndexMapLocalAccessOptimizer::new();
+        let mut access = IndexMapAccessOptimizer::Local(&mut local_access);
+        index_map.set(0, Opsk::with_value(0), &mut access);
+        index_map.set(1, Opsk::with_value(1), &mut access);
+        // Wrong hint!
+        index_map.set(2, Opsk::with_value(50), &mut IndexMapAccessOptimizer::Pop);
+        index_map.set(70, Opsk::with_value(50), &mut access);
+        index_map.set(3, Opsk::with_value(50), &mut access);
+        index_map.set(8, Opsk::with_value(100), &mut access);
     }
 }

@@ -4,7 +4,7 @@
 use std::{marker::PhantomData, num::NonZeroUsize, ops::Index};
 
 use crate::{
-    index_map::IndexMap,
+    index_map::{IndexMap, IndexMapAccessOptimizer, IndexMapLocalAccessOptimizer},
     key::{Key, KeyAllocator, Opsk, OpskAllocator, PaletteKeyType},
     key_vec::KeyVec,
     palette::Palette,
@@ -38,6 +38,37 @@ where
     _phantom: PhantomData<T>,
     /// `I` has to be used in a field.
     _phantom_interval: PhantomData<I>,
+}
+
+/// Mutable cached information that provides hints to internal components of an `OutPalVec`
+/// to make some accesses faster when acessing the `OutPalVec` with locality in mind
+/// (for example when iterating over it in order (both dorections work) or potentially
+/// accessing the same index multiple times).
+pub struct OutAccessOptimizer {
+    index_map_access: IndexMapLocalAccessOptimizer,
+}
+
+impl OutAccessOptimizer {
+    pub fn new() -> OutAccessOptimizer {
+        OutAccessOptimizer {
+            index_map_access: IndexMapLocalAccessOptimizer::new(),
+        }
+    }
+}
+
+impl Default for OutAccessOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn as_index_map_access<'a>(
+    access: &'a mut Option<&mut OutAccessOptimizer>,
+) -> IndexMapAccessOptimizer<'a> {
+    match access {
+        None => IndexMapAccessOptimizer::None,
+        Some(access) => IndexMapAccessOptimizer::Local(&mut access.index_map_access),
+    }
 }
 
 pub trait OutlierMemoryRatioInterval
@@ -103,12 +134,12 @@ where
         self.key_vec.is_empty()
     }
 
-    pub fn get(&self, index: usize) -> Option<&T> {
+    pub fn get(&self, index: usize, mut access: Option<&mut OutAccessOptimizer>) -> Option<&T> {
         let key = self.key_vec.get(index)?;
         Some(if Some(key) == self.outlier_key {
             let opsk = self
                 .index_to_opsk_map
-                .get(index)
+                .get(index, &mut as_index_map_access(&mut access))
                 .expect("Bug: Outlier key in `key_vec` but index not in index map");
             self.outlier_palette
                 .get(opsk)
@@ -120,7 +151,12 @@ where
         })
     }
 
-    pub fn set(&mut self, index: usize, element: impl ViewToOwned<T>) {
+    pub fn set(
+        &mut self,
+        index: usize,
+        element: impl ViewToOwned<T>,
+        mut access: Option<&mut OutAccessOptimizer>,
+    ) {
         let is_in_bounds = index < self.len();
         if !is_in_bounds {
             panic!("set index (is {index}) should be < len (is {})", self.len());
@@ -134,7 +170,7 @@ where
         if Some(key_of_elemement_to_remove) == self.outlier_key {
             let opsk_of_elemement_to_remove = self
                 .index_to_opsk_map
-                .remove(index)
+                .remove(index, &mut as_index_map_access(&mut access))
                 .expect("Bug: Outlier key in `key_vec` but index not in index map");
             self.outlier_palette
                 .remove_element_instances(opsk_of_elemement_to_remove, {
@@ -173,7 +209,11 @@ where
                 },
                 &mut OpskAllocator,
             );
-            let previous_entry = self.index_to_opsk_map.set(index, opsk_of_element_to_add);
+            let previous_entry = self.index_to_opsk_map.set(
+                index,
+                opsk_of_element_to_add,
+                &mut as_index_map_access(&mut access),
+            );
             if previous_entry.is_some() {
                 panic!("Bug: Index map entry was supposed to be unoccupied");
             }
@@ -221,9 +261,11 @@ where
                 },
                 &mut OpskAllocator,
             );
-            let previous_entry = self
-                .index_to_opsk_map
-                .set(self.key_vec.len(), opsk_of_element_to_add);
+            let previous_entry = self.index_to_opsk_map.set(
+                self.key_vec.len(),
+                opsk_of_element_to_add,
+                &mut IndexMapAccessOptimizer::Push,
+            );
             if previous_entry.is_some() {
                 panic!("Bug: Index map entry was supposed to be unoccupied");
             }
@@ -251,7 +293,7 @@ where
             if Some(key_of_elemement_to_remove) == self.outlier_key {
                 let opsk_of_elemement_to_remove = self
                     .index_to_opsk_map
-                    .remove(self.key_vec.len())
+                    .remove(self.key_vec.len(), &mut IndexMapAccessOptimizer::Pop)
                     .expect("Bug: Outlier key in `key_vec` but index not in index map");
                 self.outlier_palette
                     .remove_element_instances(opsk_of_elemement_to_remove, {
@@ -426,7 +468,22 @@ where
 {
     type Output = T;
     fn index(&self, index: usize) -> &Self::Output {
-        match self.get(index) {
+        match self.get(index, None) {
+            Some(element) => element,
+            None => {
+                panic!("index (is {index}) should be < len (is {})", self.len());
+            }
+        }
+    }
+}
+
+impl<T> Index<(usize, Option<&mut OutAccessOptimizer>)> for OutPalVec<T>
+where
+    T: Clone + Eq,
+{
+    type Output = T;
+    fn index(&self, (index, access): (usize, Option<&mut OutAccessOptimizer>)) -> &Self::Output {
+        match self.get(index, access) {
             Some(element) => element,
             None => {
                 panic!("index (is {index}) should be < len (is {})", self.len());
@@ -462,18 +519,18 @@ mod tests {
     fn push_and_get() {
         let mut palvec: OutPalVec<i32> = OutPalVec::new();
         palvec.push(42);
-        assert_eq!(palvec.get(0), Some(&42));
+        assert_eq!(palvec.get(0, None), Some(&42));
     }
 
     #[test]
     fn get_out_of_bounds_is_none() {
         let mut palvec: OutPalVec<()> = OutPalVec::new();
-        assert!(palvec.get(0).is_none());
+        assert!(palvec.get(0, None).is_none());
         palvec.push(());
         palvec.push(());
-        assert!(palvec.get(0).is_some());
-        assert!(palvec.get(1).is_some());
-        assert!(palvec.get(2).is_none());
+        assert!(palvec.get(0, None).is_some());
+        assert!(palvec.get(1, None).is_some());
+        assert!(palvec.get(2, None).is_none());
     }
 
     #[test]
@@ -508,7 +565,7 @@ mod tests {
         let mut palvec: OutPalVec<()> = OutPalVec::new();
         palvec.push(());
         palvec.push(());
-        palvec.set(2, ());
+        palvec.set(2, (), None);
     }
 
     #[test]
@@ -521,16 +578,16 @@ mod tests {
     #[test]
     fn set_and_get() {
         let mut palvec: OutPalVec<i32> = OutPalVec::with_len(0, 20);
-        palvec.set(10, 0);
-        palvec.set(11, 1);
-        palvec.set(12, 1);
-        palvec.set(13, 2);
-        assert_eq!(palvec.get(0), Some(&0));
-        assert_eq!(palvec.get(19), Some(&0));
-        assert_eq!(palvec.get(10), Some(&0));
-        assert_eq!(palvec.get(11), Some(&1));
-        assert_eq!(palvec.get(12), Some(&1));
-        assert_eq!(palvec.get(13), Some(&2));
+        palvec.set(10, 0, None);
+        palvec.set(11, 1, None);
+        palvec.set(12, 1, None);
+        palvec.set(13, 2, None);
+        assert_eq!(palvec.get(0, None), Some(&0));
+        assert_eq!(palvec.get(19, None), Some(&0));
+        assert_eq!(palvec.get(10, None), Some(&0));
+        assert_eq!(palvec.get(11, None), Some(&1));
+        assert_eq!(palvec.get(12, None), Some(&1));
+        assert_eq!(palvec.get(13, None), Some(&2));
     }
 
     #[test]
@@ -544,22 +601,28 @@ mod tests {
         let mut palvec: OutPalVec<String, OutlierMemoryRatioIntervalTest> =
             OutPalVec::with_len("common".to_string(), 1000);
         for i in 0..100 {
-            palvec.set(i, format!("{}", i));
+            palvec.set(i, format!("{}", i), None);
         }
         for i in 100..200 {
-            palvec.set(i, "uwu");
+            palvec.set(i, "uwu", None);
         }
         // 100 all different outliers, and 100 other identical outliers, so 200 outliers
         // but the `OutlierMemoryRatioInterval::SUP` upper ratio limit is enforced
         assert_eq!(palvec.outlier_instance_count(), 30);
         for i in 0..100 {
-            assert_eq!(palvec.get(i), Some(&format!("{}", i)));
+            assert_eq!(palvec.get(i, None), Some(&format!("{}", i)));
         }
         for i in 100..200 {
-            assert_eq!(palvec.get(i).as_ref().map(|s| s.as_str()), Some("uwu"));
+            assert_eq!(
+                palvec.get(i, None).as_ref().map(|s| s.as_str()),
+                Some("uwu")
+            );
         }
         for i in 200..1000 {
-            assert_eq!(palvec.get(i).as_ref().map(|s| s.as_str()), Some("common"));
+            assert_eq!(
+                palvec.get(i, None).as_ref().map(|s| s.as_str()),
+                Some("common")
+            );
         }
     }
 
@@ -586,17 +649,17 @@ mod tests {
     #[test]
     fn move_least_numerous_common_to_outlier() {
         let mut palvec: OutPalVec<i32> = OutPalVec::with_len(0, 20);
-        palvec.set(10, 0);
-        palvec.set(11, 1);
-        palvec.set(12, 1);
-        palvec.set(13, 2);
+        palvec.set(10, 0, None);
+        palvec.set(11, 1, None);
+        palvec.set(12, 1, None);
+        palvec.set(13, 2, None);
         palvec.move_least_numerous_common_to_outlier();
-        assert_eq!(palvec.get(0), Some(&0));
-        assert_eq!(palvec.get(19), Some(&0));
-        assert_eq!(palvec.get(10), Some(&0));
-        assert_eq!(palvec.get(11), Some(&1));
-        assert_eq!(palvec.get(12), Some(&1));
-        assert_eq!(palvec.get(13), Some(&2));
+        assert_eq!(palvec.get(0, None), Some(&0));
+        assert_eq!(palvec.get(19, None), Some(&0));
+        assert_eq!(palvec.get(10, None), Some(&0));
+        assert_eq!(palvec.get(11, None), Some(&1));
+        assert_eq!(palvec.get(12, None), Some(&1));
+        assert_eq!(palvec.get(13, None), Some(&2));
     }
 
     #[test]
@@ -604,16 +667,32 @@ mod tests {
         let mut palvec: OutPalVec<usize> = OutPalVec::with_len(42, 100 * 100);
         for i in 0..100 {
             for j in 0..100 {
-                palvec.set(i * 100 + j, i * 100);
+                palvec.set(i * 100 + j, i * 100, None);
             }
         }
         for _k in 0..50 {
             for i in 0..100 {
                 for j in 0..100 {
-                    assert_eq!(palvec.get(i * 100 + j), Some(&(i * 100)));
+                    assert_eq!(palvec.get(i * 100 + j, None), Some(&(i * 100)));
                 }
             }
             palvec.move_least_numerous_common_to_outlier();
         }
+    }
+
+    #[test]
+    fn access_hint() {
+        let mut palvec: OutPalVec<i32> = OutPalVec::with_len(0, 20);
+        let mut access = Some(OutAccessOptimizer::new());
+        palvec.set(10, 0, access.as_mut());
+        palvec.set(11, 1, access.as_mut());
+        palvec.set(12, 1, access.as_mut());
+        palvec.set(13, 2, access.as_mut());
+        assert_eq!(palvec.get(0, access.as_mut()), Some(&0));
+        assert_eq!(palvec.get(19, access.as_mut()), Some(&0));
+        assert_eq!(palvec.get(10, access.as_mut()), Some(&0));
+        assert_eq!(palvec.get(11, access.as_mut()), Some(&1));
+        assert_eq!(palvec.get(12, access.as_mut()), Some(&1));
+        assert_eq!(palvec.get(13, access.as_mut()), Some(&2));
     }
 }
