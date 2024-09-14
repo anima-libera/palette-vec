@@ -84,6 +84,7 @@ impl IndexMap {
         }
     }
 
+    /// Number of entries.
     pub(crate) fn len(&self) -> usize {
         match &self.inner {
             IndexMapEnum::U16(map_sized_u16) => map_sized_u16.len(),
@@ -92,6 +93,7 @@ impl IndexMap {
         }
     }
 
+    /// Number of entries that could be stored in the currently allocated memory.
     pub(crate) fn capacity(&self) -> usize {
         match &self.inner {
             IndexMapEnum::U16(map_sized_u16) => map_sized_u16.capacity(),
@@ -100,36 +102,16 @@ impl IndexMap {
         }
     }
 
-    fn entry_size(&self) -> usize {
+    /// The current size of an entry in this index map, in bytes.
+    ///
+    /// The size of the allocation in bytes is `self.capacity() * self.entry_size()`.
+    pub(crate) fn entry_size(&self) -> usize {
         let number_size = match &self.inner {
             IndexMapEnum::U16(_map_sized_u16) => 2,
             IndexMapEnum::U32(_map_sized_u32) => 4,
             IndexMapEnum::U64(_map_sized_u64) => 8,
         };
         number_size * 2
-    }
-
-    /// The allocated memory (in bytes).
-    pub(crate) fn actual_memory_usage(&self) -> usize {
-        self.capacity() * self.entry_size()
-    }
-
-    /// The used memory (in bytes).
-    pub(crate) fn used_memory_usage(&self) -> usize {
-        self.len() * self.entry_size()
-    }
-
-    /// The used memory (in bytes) if this many entries were added to the map.
-    /// Assumes that the number size doesn't grow.
-    pub(crate) fn used_memory_usage_if_adding_entries(&self, how_many: usize) -> usize {
-        (self.len() + how_many) * self.entry_size()
-    }
-
-    /// The used memory (in bytes) if this many entries were added to the map.
-    /// Assumes that the number size doesn't grow.
-    pub(crate) fn used_memory_usage_if_removing_entries(&self, how_many: usize) -> usize {
-        debug_assert!(how_many <= self.len());
-        (self.len() - how_many) * self.entry_size()
     }
 
     pub(crate) fn set(
@@ -370,6 +352,16 @@ impl IndexMap {
     }
 }
 
+impl Debug for IndexMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.inner {
+            IndexMapEnum::U16(map_sized_u16) => map_sized_u16.fmt(f),
+            IndexMapEnum::U32(map_sized_u32) => map_sized_u32.fmt(f),
+            IndexMapEnum::U64(map_sized_u64) => map_sized_u64.fmt(f),
+        }
+    }
+}
+
 trait NumberType
 where
     Self: Clone + Copy + Ord + TryFrom<usize> + TryInto<usize> + Default + Debug,
@@ -447,14 +439,19 @@ where
                     match entry.index_in_key_vec.cmp(&index_in_key_vec) {
                         Ordering::Equal => Some(Ok(try_index)),
                         Ordering::Greater => {
-                            if let Some(previous_entry) = self.vec.get(try_index - 1) {
-                                match previous_entry.index_in_key_vec.cmp(&index_in_key_vec) {
-                                    Ordering::Equal => Some(Ok(try_index - 1)),
-                                    Ordering::Less => Some(Err(try_index)),
-                                    Ordering::Greater => None,
+                            if let Some(try_index_minus_one) = try_index.checked_sub(1) {
+                                if let Some(previous_entry) = self.vec.get(try_index_minus_one) {
+                                    match previous_entry.index_in_key_vec.cmp(&index_in_key_vec) {
+                                        Ordering::Equal => Some(Ok(try_index_minus_one)),
+                                        Ordering::Less => Some(Err(try_index)),
+                                        Ordering::Greater => None,
+                                    }
+                                } else {
+                                    Some(Err(0))
                                 }
                             } else {
-                                Some(Err(0))
+                                // TODO: Fix this one? There might be Some answer here.
+                                None
                             }
                         }
                         Ordering::Less => {
@@ -727,6 +724,19 @@ impl<'a> AddManyEntries<'a> {
         if self.remaining_entries_to_add_count != 0 {
             panic!("Bug: finishing AddManyEntries before adding the announced amount");
         }
+    }
+}
+
+impl<N> Debug for IndexMapSized<N>
+where
+    N: NumberType,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_map = f.debug_map();
+        for entry in self.vec.iter() {
+            debug_map.entry(&entry.index_in_key_vec, &entry.opsk_value);
+        }
+        debug_map.finish()
     }
 }
 

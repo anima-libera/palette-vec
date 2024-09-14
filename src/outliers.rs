@@ -1,23 +1,23 @@
 //! `OutPalVec` is like `PalVec` but with an optimization that reduces pressure on keys size
 //! in exchange for worse performances in some cases.
 
-use std::{marker::PhantomData, num::NonZeroUsize, ops::Index};
+use std::{fmt::Debug, num::NonZeroUsize, ops::Index};
 
 use crate::{
     index_map::{IndexMap, IndexMapAccessOptimizer, IndexMapLocalAccessOptimizer},
-    key::{Key, KeyAllocator, Opsk, OpskAllocator, PaletteKeyType},
+    key::{keys_size_for_this_many_keys, Key, KeyAllocator, Opsk, OpskAllocator, PaletteKeyType},
     key_vec::KeyVec,
-    palette::Palette,
+    palette::{CountAndKey, Palette, PaletteEntry},
     utils::view_to_owned::ViewToOwned,
     BorrowedOrOwned,
 };
 
 // TODO: Better doc!
 #[derive(Clone)]
-pub struct OutPalVec<T, I = OutlierMemoryRatioIntervalDefault>
+pub struct OutPalVec<T, MMP = MemoryManagementPolicyEveryNOccasions>
 where
-    T: Clone + Eq,
-    I: OutlierMemoryRatioInterval,
+    T: Clone + Eq + Debug,
+    MMP: MemoryManagementPolicy,
 {
     /// Instances of `outlier_key` are handled by the `index_to_opsk_map` and the `outlier_palette`
     /// and other keys are handled by `palette`.
@@ -34,10 +34,9 @@ where
     /// thing as we could think in terms of smaller memory usage to decide when to move elements
     /// between the outlier and common palettes.
     index_to_opsk_map: IndexMap,
-    /// The palette holds owned `T`s, also `T` has to be used in a field.
-    _phantom: PhantomData<T>,
-    /// `I` has to be used in a field.
-    _phantom_interval: PhantomData<I>,
+    /// Memory management operations are potentially expensive.
+    /// This policy will decide if such operations are performed at each occasion.
+    memory_management_policy: MMP,
 }
 
 /// Mutable cached information that provides hints to internal components of an `OutPalVec`
@@ -71,25 +70,90 @@ fn as_index_map_access<'a>(
     }
 }
 
-pub trait OutlierMemoryRatioInterval
+/// Trait that a memory management policy type
+/// passed to the corresponding `OutPalVec` type parameter must have.
+///
+/// It describes how often the `OutPalVec` will perform
+/// potentially expensive memory management operations on its own.
+pub trait MemoryManagementPolicy
 where
     Self: Clone,
 {
-    const LOWER_LIMIT_WEAK: f32;
-    const UPPER_LIMIT: f32;
+    fn new() -> Self;
+
+    const NEW_ELEMENT_BE_COMMON: bool;
+
+    /// Whenever the `OutPalVec` has an occasion to perform memory management operations,
+    /// this method is asked if that should be done.
+    fn perform_memory_management_on_this_occasion(&mut self) -> bool;
 }
 
+/// The `OutPalVec` will never perform memory management operations on its own.
+///
+/// With such policy, it is important to manually trigger the memory management method of
+/// the `OutPalVec` or else it will remain in a state no better than a `PalVec`.
+/// Use this policy when you know what you are doing
+/// and that the times you manually trigger memory management are sufficient.
 #[derive(Clone)]
-pub struct OutlierMemoryRatioIntervalDefault;
-impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalDefault {
-    const LOWER_LIMIT_WEAK: f32 = 0.013;
-    const UPPER_LIMIT: f32 = 0.025;
+pub struct MemoryManagementPolicyNever;
+impl MemoryManagementPolicy for MemoryManagementPolicyNever {
+    fn new() -> Self {
+        MemoryManagementPolicyNever
+    }
+
+    const NEW_ELEMENT_BE_COMMON: bool = true;
+
+    fn perform_memory_management_on_this_occasion(&mut self) -> bool {
+        false
+    }
 }
 
-impl<T, I> OutPalVec<T, I>
+/// The `OutPalVec` will perform memory management operations every time it gets the chance.
+///
+/// This is probably a bad idea, [`MemoryManagementPolicyEveryNOccasions`] is probably better.
+#[derive(Clone)]
+pub struct MemoryManagementPolicyAlways;
+impl MemoryManagementPolicy for MemoryManagementPolicyAlways {
+    fn new() -> Self {
+        MemoryManagementPolicyAlways
+    }
+
+    const NEW_ELEMENT_BE_COMMON: bool = false;
+
+    fn perform_memory_management_on_this_occasion(&mut self) -> bool {
+        true
+    }
+}
+
+/// The `OutPalVec` will perform memory management operations once every N occasions.
+///
+/// The value of `N` might be something to be tweaked.
+#[derive(Clone)]
+pub struct MemoryManagementPolicyEveryNOccasions<const N: usize = 100> {
+    counter: usize,
+}
+impl<const N: usize> MemoryManagementPolicy for MemoryManagementPolicyEveryNOccasions<N> {
+    fn new() -> Self {
+        MemoryManagementPolicyEveryNOccasions { counter: 0 }
+    }
+
+    const NEW_ELEMENT_BE_COMMON: bool = false;
+
+    fn perform_memory_management_on_this_occasion(&mut self) -> bool {
+        self.counter += 1;
+        if N <= self.counter {
+            self.counter = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<T, MMP> OutPalVec<T, MMP>
 where
-    T: Clone + Eq,
-    I: OutlierMemoryRatioInterval,
+    T: Clone + Eq + Debug,
+    MMP: MemoryManagementPolicy,
 {
     pub fn new() -> Self {
         Self {
@@ -98,8 +162,7 @@ where
             outlier_key: None,
             outlier_palette: Palette::new(),
             index_to_opsk_map: IndexMap::new(),
-            _phantom: PhantomData,
-            _phantom_interval: PhantomData,
+            memory_management_policy: MMP::new(),
         }
     }
 
@@ -116,8 +179,7 @@ where
                 outlier_key: None,
                 outlier_palette: Palette::new(),
                 index_to_opsk_map: IndexMap::new(),
-                _phantom: PhantomData,
-                _phantom_interval: PhantomData,
+                memory_management_policy: MMP::new(),
             }
         }
     }
@@ -132,6 +194,27 @@ where
 
     pub fn is_empty(&self) -> bool {
         self.key_vec.is_empty()
+    }
+
+    /// Returns the number of instances of the given element.
+    ///
+    /// This operation is *O*(*common_palette_len + outlier_palette_len*).
+    /// The common palette is searched first.
+    pub fn number_of_instances(&self, element: &impl ViewToOwned<T>) -> usize {
+        let count_if_common = self.common_palette.number_of_instances(element);
+        if count_if_common == 0 {
+            self.outlier_palette.number_of_instances(element)
+        } else {
+            count_if_common
+        }
+    }
+
+    /// Returns `true` if the given element is present in the `PalVec`.
+    ///
+    /// This operation is *O*(*common_palette_len + outlier_palette_len*).
+    /// The common palette is searched first.
+    pub fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
+        self.number_of_instances(element) != 0
     }
 
     pub fn get(&self, index: usize, mut access: Option<&mut OutAccessOptimizer>) -> Option<&T> {
@@ -186,104 +269,106 @@ where
         }
 
         // Add new element.
-        let key_of_element_to_add = if self.common_palette.contains(&element) {
-            // Already a common element.
-            self.common_palette.add_element_instances(
-                element,
-                {
-                    // SAFETY: 1 is not 0.
-                    unsafe { NonZeroUsize::new_unchecked(1) }
-                },
-                &mut KeyAllocator {
-                    key_vec: &mut self.key_vec,
-                    reserved_key: self.outlier_key,
-                },
-            )
-        } else {
-            // Either a new element or an already outlier element.
-            let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
-                element,
-                {
-                    // SAFETY: 1 is not 0.
-                    unsafe { NonZeroUsize::new_unchecked(1) }
-                },
-                &mut OpskAllocator,
-            );
-            let previous_entry = self.index_to_opsk_map.set(
-                index,
-                opsk_of_element_to_add,
-                &mut as_index_map_access(&mut access),
-            );
-            if previous_entry.is_some() {
-                panic!("Bug: Index map entry was supposed to be unoccupied");
-            }
-            if self.outlier_key.is_none() {
-                let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
-                    key_vec: &mut self.key_vec,
-                    reserved_key: self.outlier_key,
-                });
-                self.key_vec.make_sure_a_key_fits(outlier_key);
-                self.outlier_key = Some(outlier_key);
-            }
-            self.outlier_key.unwrap()
-        };
+        let key_of_element_to_add =
+            if self.common_palette.contains(&element) || MMP::NEW_ELEMENT_BE_COMMON {
+                // Already a common element, or we decided that all new elements start as common.
+                self.common_palette.add_element_instances(
+                    element,
+                    {
+                        // SAFETY: 1 is not 0.
+                        unsafe { NonZeroUsize::new_unchecked(1) }
+                    },
+                    &mut KeyAllocator {
+                        key_vec: &mut self.key_vec,
+                        reserved_key: self.outlier_key,
+                    },
+                )
+            } else {
+                // Either a new element or an already outlier element.
+                let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
+                    element,
+                    {
+                        // SAFETY: 1 is not 0.
+                        unsafe { NonZeroUsize::new_unchecked(1) }
+                    },
+                    &mut OpskAllocator,
+                );
+                let previous_entry = self.index_to_opsk_map.set(
+                    index,
+                    opsk_of_element_to_add,
+                    &mut as_index_map_access(&mut access),
+                );
+                if previous_entry.is_some() {
+                    panic!("Bug: Index map entry was supposed to be unoccupied");
+                }
+                if self.outlier_key.is_none() {
+                    let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
+                        key_vec: &mut self.key_vec,
+                        reserved_key: self.outlier_key,
+                    });
+                    self.key_vec.make_sure_a_key_fits(outlier_key);
+                    self.outlier_key = Some(outlier_key);
+                }
+                self.outlier_key.unwrap()
+            };
 
         // SAFETY: We checked the bounds so we have `index < self.len()`,
         // and `KeyAllocator` made sure that the key fits.
         unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
 
-        self.enforce_upper_limit_on_outlier_ratio();
+        self.consider_this_occasion_to_maybe_perform_memory_management();
     }
 
     pub fn push(&mut self, element: impl ViewToOwned<T>) {
         // TODO: Factorize the duplicated code with `set`, there is a lot of it.
 
-        let key_of_element_to_add = if self.common_palette.contains(&element) {
-            // Already a common element.
-            self.common_palette.add_element_instances(
-                element,
-                {
-                    // SAFETY: 1 is not 0.
-                    unsafe { NonZeroUsize::new_unchecked(1) }
-                },
-                &mut KeyAllocator {
-                    key_vec: &mut self.key_vec,
-                    reserved_key: self.outlier_key,
-                },
-            )
-        } else {
-            // Either a new element or an already outlier element.
-            let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
-                element,
-                {
-                    // SAFETY: 1 is not 0.
-                    unsafe { NonZeroUsize::new_unchecked(1) }
-                },
-                &mut OpskAllocator,
-            );
-            let previous_entry = self.index_to_opsk_map.set(
-                self.key_vec.len(),
-                opsk_of_element_to_add,
-                &mut IndexMapAccessOptimizer::Push,
-            );
-            if previous_entry.is_some() {
-                panic!("Bug: Index map entry was supposed to be unoccupied");
-            }
-            if self.outlier_key.is_none() {
-                let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
-                    key_vec: &mut self.key_vec,
-                    reserved_key: self.outlier_key,
-                });
-                self.key_vec.make_sure_a_key_fits(outlier_key);
-                self.outlier_key = Some(outlier_key);
-            }
-            self.outlier_key.unwrap()
-        };
+        let key_of_element_to_add =
+            if self.common_palette.contains(&element) || MMP::NEW_ELEMENT_BE_COMMON {
+                // Already a common element, or we decided that all new elements start as common.
+                self.common_palette.add_element_instances(
+                    element,
+                    {
+                        // SAFETY: 1 is not 0.
+                        unsafe { NonZeroUsize::new_unchecked(1) }
+                    },
+                    &mut KeyAllocator {
+                        key_vec: &mut self.key_vec,
+                        reserved_key: self.outlier_key,
+                    },
+                )
+            } else {
+                // Either a new element or an already outlier element.
+                let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
+                    element,
+                    {
+                        // SAFETY: 1 is not 0.
+                        unsafe { NonZeroUsize::new_unchecked(1) }
+                    },
+                    &mut OpskAllocator,
+                );
+                let previous_entry = self.index_to_opsk_map.set(
+                    self.key_vec.len(),
+                    opsk_of_element_to_add,
+                    &mut IndexMapAccessOptimizer::Push,
+                );
+                if previous_entry.is_some() {
+                    panic!("Bug: Index map entry was supposed to be unoccupied");
+                }
+                if self.outlier_key.is_none() {
+                    let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
+                        key_vec: &mut self.key_vec,
+                        reserved_key: self.outlier_key,
+                    });
+                    self.key_vec.make_sure_a_key_fits(outlier_key);
+                    self.outlier_key = Some(outlier_key);
+                }
+                self.outlier_key.unwrap()
+            };
 
         // SAFETY: `KeyAllocator` made sure that the key fits.
         unsafe { self.key_vec.push_unchecked(key_of_element_to_add) }
 
-        self.enforce_upper_limit_on_outlier_ratio();
+        self.consider_this_occasion_to_maybe_perform_memory_management();
     }
 
     pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, T>> {
@@ -310,152 +395,302 @@ where
         })
     }
 
-    fn move_most_numerous_outlier_to_common(&mut self) {
-        let Some(opsk_to_move) = self.outlier_palette.key_of_most_instanced_element() else {
-            return;
-        };
-        let palette_entry = self
-            .outlier_palette
-            .remove_entry(opsk_to_move)
-            .expect("Bug: We just got this opsk from the outlier palette");
-        if self.outlier_palette.len() == 0 {
-            // There are no outliers anymore, we can make the outlier key available.
-            self.outlier_key = None;
+    fn consider_this_occasion_to_maybe_perform_memory_management(&mut self) {
+        if self
+            .memory_management_policy
+            .perform_memory_management_on_this_occasion()
+        {
+            self.perform_memory_management();
         }
-        let new_key = self.common_palette.add_entry(
-            palette_entry,
-            &mut KeyAllocator {
-                key_vec: &mut self.key_vec,
-                reserved_key: self.outlier_key,
-            },
-        );
-        self.index_to_opsk_map
-            .remove_all_with_opsk(opsk_to_move, |index| {
-                self.key_vec.set(index, new_key);
-            });
     }
 
-    fn move_least_numerous_common_to_outlier(&mut self) {
-        let Some(key_to_move) = self.common_palette.key_of_least_instanced_element() else {
-            return;
-        };
-        let highest_key_value = if let Some(outlier_key) = self.outlier_key {
-            self.common_palette.len().max(outlier_key.value)
-        } else {
-            self.common_palette.len()
-        };
-        let mut key_rewriting_map: Vec<Option<Key>> = vec![None; highest_key_value];
-        let palette_entry = self
-            .common_palette
-            .remove_entry(key_to_move)
-            .expect("Bug: We just got this key from the common palette");
-        let how_many_entries_to_add_to_index_map = palette_entry.count();
-        if self.outlier_key.is_none() {
-            let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
-                key_vec: &mut self.key_vec,
-                reserved_key: self.outlier_key,
-            });
-            self.key_vec.make_sure_a_key_fits(outlier_key);
-            self.outlier_key = Some(outlier_key);
-        }
-        let new_opsk = self
-            .outlier_palette
-            .add_entry(palette_entry, &mut OpskAllocator);
-        key_rewriting_map[key_to_move.value] = Some(self.outlier_key.unwrap());
-        loop {
-            let highest_key_value = if let Some(outlier_key) = self.outlier_key {
-                self.common_palette.len().max(outlier_key.value)
-            } else {
-                self.common_palette.len()
-            };
-            let available_key = self.common_palette.smallest_available_key(&KeyAllocator {
-                key_vec: &mut self.key_vec,
-                reserved_key: self.outlier_key,
-            });
-            if highest_key_value <= available_key.value {
-                break;
-            } else if self
-                .outlier_key
-                .is_some_and(|outlier_key| outlier_key.value == highest_key_value)
-            {
-                key_rewriting_map[self.outlier_key.unwrap().value] = Some(available_key);
-                key_rewriting_map[key_to_move.value] = Some(available_key);
-            } else {
-                let palette_entry = self
-                    .common_palette
-                    .remove_entry(Key::with_value(highest_key_value))
-                    .expect("Bug: We just got this key from the common palette");
-                let new_key_for_this_entry = self.common_palette.add_entry(
-                    palette_entry,
-                    &mut KeyAllocator {
-                        key_vec: &mut self.key_vec,
-                        reserved_key: self.outlier_key,
-                    },
-                );
-                key_rewriting_map[highest_key_value] = Some(new_key_for_this_entry);
-            }
-        }
-        let mut add_many_entries_to_index_map = self
-            .index_to_opsk_map
-            .add_many_entries(how_many_entries_to_add_to_index_map);
-        for index in (0..self.key_vec.len()).rev() {
-            let key = self.key_vec.get(index).unwrap();
-            if let Some(new_key) = key_rewriting_map[key.value] {
-                self.key_vec.set(index, new_key);
-                if Some(new_key) == self.outlier_key {
-                    add_many_entries_to_index_map.add_entry(index, new_opsk);
+    fn compute_memory_optimizing_plan(&self) -> MemoryOptimizingPlan {
+        let commons = self.common_palette.len();
+        let outliers = self.outlier_palette.len();
+
+        let counts_and_keys_common = self.common_palette.counts_and_keys_sorted_by_counts(true);
+        let counts_and_keys_outlier = self.outlier_palette.counts_and_keys_sorted_by_counts(false);
+
+        // Let us now consider how many elements to move from one palette to the other,
+        // for both ways at the same time.
+        // For each possibility, we compute the amount of used memory that it saves,
+        // so that we can find the possibility that saves the most amount of used memory.
+
+        let mut best_memory_in_bits = None;
+        let mut best_c2o_and_o2c = None;
+        for how_many_common_to_outlier in 0..=commons {
+            for how_many_outlier_to_common in 0..=outliers {
+                let new_common_entry_count =
+                    (commons + how_many_outlier_to_common) - how_many_common_to_outlier;
+                let new_outlier_entry_count =
+                    (outliers + how_many_common_to_outlier) - how_many_outlier_to_common;
+                let new_common_key_count =
+                    new_common_entry_count + if 1 <= new_outlier_entry_count { 1 } else { 0 };
+                let new_keys_size_in_bits = keys_size_for_this_many_keys(new_common_key_count);
+                let new_key_vec_memory_in_bits = self.key_vec.len() * new_keys_size_in_bits;
+
+                let new_index_map_entry_count = self.index_to_opsk_map.len()
+                    + counts_and_keys_common
+                        .iter()
+                        .map(|count_and_key| count_and_key.count)
+                        .take(how_many_common_to_outlier)
+                        .sum::<usize>()
+                    - counts_and_keys_outlier
+                        .iter()
+                        .map(|count_and_key| count_and_key.count)
+                        .take(how_many_outlier_to_common)
+                        .sum::<usize>();
+                let index_map_entry_size_in_bytes = self.index_to_opsk_map.entry_size();
+                let new_index_map_memory_in_bytes =
+                    new_index_map_entry_count * index_map_entry_size_in_bytes;
+
+                let new_memory_in_bits =
+                    new_key_vec_memory_in_bits + new_index_map_memory_in_bytes * 8;
+
+                if best_memory_in_bits
+                    .is_some_and(|best_memory_in_bits| new_memory_in_bits < best_memory_in_bits)
+                    || best_memory_in_bits.is_none()
+                {
+                    best_memory_in_bits = Some(new_memory_in_bits);
+                    best_c2o_and_o2c =
+                        Some((how_many_common_to_outlier, how_many_outlier_to_common));
                 }
             }
         }
-        add_many_entries_to_index_map.finish();
+
+        let (how_many_common_to_outlier, how_many_outlier_to_common) = best_c2o_and_o2c.unwrap();
+
+        MemoryOptimizingPlan {
+            counts_and_keys_common,
+            counts_and_keys_outlier,
+            how_many_common_to_outlier,
+            how_many_outlier_to_common,
+        }
     }
 
-    fn outlier_ratio(&self) -> Option<f32> {
-        let len = self.len();
-        (len != 0).then(|| {
-            let outlier_instance_count = self.outlier_instance_count();
-            outlier_instance_count as f32 / len as f32
-        })
-    }
+    fn apply_memory_optimizing_plan(&mut self, plan: MemoryOptimizingPlan) {
+        let old_common_highest_used_key = self.common_palette.highest_used_key();
+        let old_outlier_highest_used_key = self.outlier_palette.highest_used_key();
 
-    fn enforce_upper_limit_on_outlier_ratio(&mut self) {
-        loop {
-            let Some(outlier_ratio) = self.outlier_ratio() else {
-                return;
-            };
-            if outlier_ratio <= I::UPPER_LIMIT {
-                // All is good.
-                break;
+        let new_outlier_palette_len = (self.outlier_palette.len()
+            + plan.how_many_common_to_outlier)
+            - plan.how_many_outlier_to_common;
+
+        // PHASE 1
+        //
+        // First we extract palette entries that will move to the other palette.
+
+        struct EntryAndOldKey<T, K>
+        where
+            K: PaletteKeyType,
+        {
+            entry: PaletteEntry<T>,
+            old_key: K,
+        }
+
+        let mut common_to_outlier_entries = Vec::with_capacity(plan.how_many_common_to_outlier);
+        for i in 0..plan.how_many_common_to_outlier {
+            let key = plan.counts_and_keys_common[i].key;
+            let entry = self.common_palette.remove_entry(key).unwrap();
+            common_to_outlier_entries.push(EntryAndOldKey {
+                entry,
+                old_key: key,
+            });
+        }
+
+        let mut outlier_to_common_entries = Vec::with_capacity(plan.how_many_outlier_to_common);
+        for i in 0..plan.how_many_outlier_to_common {
+            let opsk = plan.counts_and_keys_outlier[i].key;
+            let entry = self.outlier_palette.remove_entry(opsk).unwrap();
+            outlier_to_common_entries.push(EntryAndOldKey {
+                entry,
+                old_key: opsk,
+            });
+        }
+
+        // PHASE 2
+        //
+        // Now we establish key rewrite tables as we recompose the palettes.
+        // Each palette is packed (so that there is no "hole" in the key values it uses)
+        // and is added the palette entries that move to this palette according to the plan.
+        // While the entries move and their associated keys and OPSKs change,
+        // the key changes (and the common/outlier status changes) are recorded in
+        // key rewrite tables that will be used to then rewrite the key vec and the the index map.
+
+        #[derive(Clone, Copy, Debug)]
+        enum KeyRewrite {
+            NoRewrite,
+            ToCommonKey(Key),
+            ToOutlierKeyWithOPSK(Opsk),
+            /// It doesn't make sense to acces this key rewrite,
+            /// for example because the old key it corresponds to was not used.
+            Unreachable,
+        }
+
+        let common_key_rewrite_table_len = match (old_common_highest_used_key, self.outlier_key) {
+            (None, None) => 0,
+            (None, Some(outlier_key)) => outlier_key.value + 1,
+            (Some(higest_used_key), None) => higest_used_key.value + 1,
+            (Some(higest_used_key), Some(outlier_key)) => {
+                higest_used_key.value.max(outlier_key.value) + 1
             }
-            self.move_most_numerous_outlier_to_common();
+        };
+        let outlier_key_rewrite_table_len =
+            old_outlier_highest_used_key.map_or(0, |highest_used_key| highest_used_key.value + 1);
+
+        let mut common_key_rewrite_table =
+            vec![KeyRewrite::Unreachable; common_key_rewrite_table_len];
+        let mut outlier_key_rewrite_table =
+            vec![KeyRewrite::Unreachable; outlier_key_rewrite_table_len];
+
+        let old_outlier_key = self.outlier_key;
+        let new_outlier_key = (1 <= new_outlier_palette_len).then_some(
+            self.common_palette.smallest_available_key(&KeyAllocator {
+                key_vec: &mut self.key_vec,
+                reserved_key: None,
+            }),
+        );
+
+        // Common to common rewrites.
+        for key_value_to_rewrite_if_used in 0..common_key_rewrite_table_len {
+            if let Some(entry) = self
+                .common_palette
+                .remove_entry(Key::with_value(key_value_to_rewrite_if_used))
+            {
+                let new_key = self.common_palette.add_entry(
+                    entry,
+                    &mut KeyAllocator {
+                        key_vec: &mut self.key_vec,
+                        reserved_key: new_outlier_key,
+                    },
+                );
+                let old_key_value = key_value_to_rewrite_if_used;
+                common_key_rewrite_table[old_key_value] =
+                    if Key::with_value(old_key_value) == new_key {
+                        KeyRewrite::NoRewrite
+                    } else {
+                        KeyRewrite::ToCommonKey(new_key)
+                    };
+            }
         }
+
+        // Outlier to outlier rewrites.
+        for key_value_to_rewrite_if_used in 0..outlier_key_rewrite_table_len {
+            if let Some(entry) = self
+                .outlier_palette
+                .remove_entry(Opsk::with_value(key_value_to_rewrite_if_used))
+            {
+                let new_opsk = self.outlier_palette.add_entry(entry, &mut OpskAllocator);
+                let old_opsk_value = key_value_to_rewrite_if_used;
+                outlier_key_rewrite_table[old_opsk_value] =
+                    if Opsk::with_value(old_opsk_value) == new_opsk {
+                        KeyRewrite::NoRewrite
+                    } else {
+                        KeyRewrite::ToOutlierKeyWithOPSK(new_opsk)
+                    };
+            }
+        }
+
+        // Outlier to common rewrites.
+        for entry_and_old_key in outlier_to_common_entries {
+            let new_key = self.common_palette.add_entry(
+                entry_and_old_key.entry,
+                &mut KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: new_outlier_key,
+                },
+            );
+            outlier_key_rewrite_table[entry_and_old_key.old_key.value] =
+                KeyRewrite::ToCommonKey(new_key);
+        }
+
+        // Common to outlier rewrites.
+        for entry_and_old_key in common_to_outlier_entries {
+            let new_opsk = self
+                .outlier_palette
+                .add_entry(entry_and_old_key.entry, &mut OpskAllocator);
+            common_key_rewrite_table[entry_and_old_key.old_key.value] =
+                KeyRewrite::ToOutlierKeyWithOPSK(new_opsk);
+        }
+
+        // PHASE 3
+        //
+        // Now we use the key rewrite tables to rewrite the key vec and the the index map.
+
+        let mut index_map_local_access = IndexMapLocalAccessOptimizer::new();
+        let mut index_map_access = IndexMapAccessOptimizer::Local(&mut index_map_local_access);
+        for index_in_key_vec in 0..self.key_vec.len() {
+            let old_key = self.key_vec.get(index_in_key_vec).unwrap();
+            if Some(old_key) == old_outlier_key {
+                // The old key was the outlier key.
+                let old_opsk = self
+                    .index_to_opsk_map
+                    .get(index_in_key_vec, &mut index_map_access)
+                    .expect("Bug: Outlier key in key vec but no entry in index map");
+                let key_rewrite = outlier_key_rewrite_table[old_opsk.value];
+                match key_rewrite {
+                    KeyRewrite::NoRewrite => {
+                        if new_outlier_key != old_outlier_key {
+                            self.key_vec.set(index_in_key_vec, new_outlier_key.unwrap());
+                        }
+                    }
+                    KeyRewrite::ToCommonKey(new_key) => {
+                        self.key_vec.set(index_in_key_vec, new_key);
+                        self.index_to_opsk_map
+                            .remove(index_in_key_vec, &mut index_map_access);
+                    }
+                    KeyRewrite::ToOutlierKeyWithOPSK(new_opsk) => {
+                        if new_outlier_key != old_outlier_key {
+                            self.key_vec.set(index_in_key_vec, new_outlier_key.unwrap());
+                        }
+                        self.index_to_opsk_map.set(
+                            index_in_key_vec,
+                            new_opsk,
+                            &mut index_map_access,
+                        );
+                    }
+                    KeyRewrite::Unreachable => unreachable!(),
+                }
+            } else {
+                // The old key was not the outlier key.
+                let key_rewrite = common_key_rewrite_table[old_key.value];
+                match key_rewrite {
+                    KeyRewrite::NoRewrite => {}
+                    KeyRewrite::ToCommonKey(new_key) => {
+                        self.key_vec.set(index_in_key_vec, new_key);
+                    }
+                    KeyRewrite::ToOutlierKeyWithOPSK(new_opsk) => {
+                        self.key_vec.set(index_in_key_vec, new_outlier_key.unwrap());
+                        self.index_to_opsk_map.set(
+                            index_in_key_vec,
+                            new_opsk,
+                            &mut index_map_access,
+                        );
+                    }
+                    KeyRewrite::Unreachable => unreachable!(),
+                }
+            }
+        }
+
+        self.outlier_key = new_outlier_key;
     }
 
-    /// Returns the number of instances of the given element.
-    ///
-    /// This operation is *O*(*common_palette_len + outlier_palette_len*).
-    /// The common palette is searched first.
-    pub fn number_of_instances(&self, element: &impl ViewToOwned<T>) -> usize {
-        let count_if_common = self.common_palette.number_of_instances(element);
-        if count_if_common == 0 {
-            self.outlier_palette.number_of_instances(element)
-        } else {
-            count_if_common
-        }
+    pub fn perform_memory_management(&mut self) {
+        let plan = self.compute_memory_optimizing_plan();
+        self.apply_memory_optimizing_plan(plan);
     }
+}
 
-    /// Returns `true` if the given element is present in the `PalVec`.
-    ///
-    /// This operation is *O*(*common_palette_len + outlier_palette_len*).
-    /// The common palette is searched first.
-    pub fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
-        self.number_of_instances(element) != 0
-    }
+struct MemoryOptimizingPlan {
+    counts_and_keys_common: Vec<CountAndKey<Key>>,
+    counts_and_keys_outlier: Vec<CountAndKey<Opsk>>,
+    how_many_common_to_outlier: usize,
+    how_many_outlier_to_common: usize,
 }
 
 impl<T> Default for OutPalVec<T>
 where
-    T: Clone + Eq,
+    T: Clone + Eq + Debug,
 {
     fn default() -> Self {
         Self::new()
@@ -464,7 +699,7 @@ where
 
 impl<T> Index<usize> for OutPalVec<T>
 where
-    T: Clone + Eq,
+    T: Clone + Eq + Debug,
 {
     type Output = T;
     fn index(&self, index: usize) -> &Self::Output {
@@ -479,7 +714,7 @@ where
 
 impl<T> Index<(usize, Option<&mut OutAccessOptimizer>)> for OutPalVec<T>
 where
-    T: Clone + Eq,
+    T: Clone + Eq + Debug,
 {
     type Output = T;
     fn index(&self, (index, access): (usize, Option<&mut OutAccessOptimizer>)) -> &Self::Output {
@@ -591,42 +826,6 @@ mod tests {
     }
 
     #[test]
-    fn outlier_ratio_upper_limit() {
-        #[derive(Clone)]
-        pub struct OutlierMemoryRatioIntervalTest;
-        impl OutlierMemoryRatioInterval for OutlierMemoryRatioIntervalTest {
-            const LOWER_LIMIT_WEAK: f32 = 0.010;
-            const UPPER_LIMIT: f32 = 0.030;
-        }
-        let mut palvec: OutPalVec<String, OutlierMemoryRatioIntervalTest> =
-            OutPalVec::with_len("common".to_string(), 1000);
-        for i in 0..100 {
-            palvec.set(i, format!("{}", i), None);
-        }
-        for i in 100..200 {
-            palvec.set(i, "uwu", None);
-        }
-        // 100 all different outliers, and 100 other identical outliers, so 200 outliers
-        // but the `OutlierMemoryRatioInterval::SUP` upper ratio limit is enforced
-        assert_eq!(palvec.outlier_instance_count(), 30);
-        for i in 0..100 {
-            assert_eq!(palvec.get(i, None), Some(&format!("{}", i)));
-        }
-        for i in 100..200 {
-            assert_eq!(
-                palvec.get(i, None).as_ref().map(|s| s.as_str()),
-                Some("uwu")
-            );
-        }
-        for i in 200..1000 {
-            assert_eq!(
-                palvec.get(i, None).as_ref().map(|s| s.as_str()),
-                Some("common")
-            );
-        }
-    }
-
-    #[test]
     fn single_index() {
         let mut palvec: OutPalVec<i32> = OutPalVec::new();
         palvec.push(8);
@@ -647,40 +846,6 @@ mod tests {
     }
 
     #[test]
-    fn move_least_numerous_common_to_outlier() {
-        let mut palvec: OutPalVec<i32> = OutPalVec::with_len(0, 20);
-        palvec.set(10, 0, None);
-        palvec.set(11, 1, None);
-        palvec.set(12, 1, None);
-        palvec.set(13, 2, None);
-        palvec.move_least_numerous_common_to_outlier();
-        assert_eq!(palvec.get(0, None), Some(&0));
-        assert_eq!(palvec.get(19, None), Some(&0));
-        assert_eq!(palvec.get(10, None), Some(&0));
-        assert_eq!(palvec.get(11, None), Some(&1));
-        assert_eq!(palvec.get(12, None), Some(&1));
-        assert_eq!(palvec.get(13, None), Some(&2));
-    }
-
-    #[test]
-    fn move_least_numerous_common_to_outlier_2() {
-        let mut palvec: OutPalVec<usize> = OutPalVec::with_len(42, 100 * 100);
-        for i in 0..100 {
-            for j in 0..100 {
-                palvec.set(i * 100 + j, i * 100, None);
-            }
-        }
-        for _k in 0..50 {
-            for i in 0..100 {
-                for j in 0..100 {
-                    assert_eq!(palvec.get(i * 100 + j, None), Some(&(i * 100)));
-                }
-            }
-            palvec.move_least_numerous_common_to_outlier();
-        }
-    }
-
-    #[test]
     fn access_hint() {
         let mut palvec: OutPalVec<i32> = OutPalVec::with_len(0, 20);
         let mut access = Some(OutAccessOptimizer::new());
@@ -694,5 +859,78 @@ mod tests {
         assert_eq!(palvec.get(11, access.as_mut()), Some(&1));
         assert_eq!(palvec.get(12, access.as_mut()), Some(&1));
         assert_eq!(palvec.get(13, access.as_mut()), Some(&2));
+    }
+
+    #[test]
+    fn memory_management() {
+        let mut palvec: OutPalVec<isize, MemoryManagementPolicyEveryNOccasions<20>> =
+            OutPalVec::new();
+        let mut vec_to_compare = vec![];
+        for i in 0..100 {
+            for _j in 0..i {
+                palvec.push(-i);
+                vec_to_compare.push(-i);
+            }
+        }
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..vec_to_compare.len() {
+            assert_eq!(palvec.get(i, None), Some(&vec_to_compare[i]));
+        }
+    }
+
+    #[test]
+    fn memory_optimization_plan() {
+        let mut palvec: OutPalVec<isize, MemoryManagementPolicyNever> = OutPalVec::new();
+        let mut vec_to_compare = vec![];
+        for i in 0..3 {
+            for _j in 0..1000 {
+                palvec.push(-i);
+                vec_to_compare.push(-i);
+            }
+        }
+        // 6 palette entries of very small instance count.
+        // They default to be common (due to the policy) but they should be planed to
+        // be moved to the outliers.
+        for value in [-10, -10, -10, -11, -11, -12, -13, -14, -15] {
+            palvec.push(value);
+            vec_to_compare.push(value);
+        }
+        let plan = palvec.compute_memory_optimizing_plan();
+        assert_eq!(plan.how_many_common_to_outlier, 6);
+        assert_eq!(plan.how_many_outlier_to_common, 0);
+        for count_and_key in plan.counts_and_keys_common.iter().take(6) {
+            // Check that they are sorted correctly so that the 6 commons that are flagged to move
+            // are the 6 we think about.
+            assert!(count_and_key.count <= 3);
+        }
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..vec_to_compare.len() {
+            assert_eq!(palvec.get(i, None), Some(&vec_to_compare[i]));
+        }
+    }
+
+    #[test]
+    fn memory_management_2() {
+        let mut palvec: OutPalVec<isize, MemoryManagementPolicyNever> = OutPalVec::new();
+        let mut vec_to_compare = vec![];
+        for i in 0..3 {
+            for _j in 0..1000 {
+                palvec.push(-i);
+                vec_to_compare.push(-i);
+            }
+        }
+        // 6 palette entries of very small instance count.
+        // They default to be common (due to the policy) but they should be planed to
+        // be moved to the outliers.
+        for value in [-10, -10, -10, -11, -11, -12, -13, -14, -15] {
+            palvec.push(value);
+            vec_to_compare.push(value);
+        }
+        palvec.perform_memory_management();
+        assert_eq!(palvec.outlier_palette.len(), 6);
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..vec_to_compare.len() {
+            assert_eq!(palvec.get(i, None), Some(&vec_to_compare[i]));
+        }
     }
 }

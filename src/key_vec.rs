@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    fmt::Debug,
     mem::ManuallyDrop,
     ops::{DerefMut, Range},
 };
@@ -420,6 +421,16 @@ impl Clone for KeyVec {
                 }
             },
         }
+    }
+}
+
+impl Debug for KeyVec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_list = f.debug_list();
+        for index in 0..self.len() {
+            debug_list.entry(&self.get(index).unwrap().value);
+        }
+        debug_list.finish()
     }
 }
 

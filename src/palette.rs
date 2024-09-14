@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, mem::MaybeUninit, num::NonZeroUsize};
+use std::{fmt::Debug, marker::PhantomData, mem::MaybeUninit, num::NonZeroUsize};
 
 use crate::{
     key::{PaletteKeyAllocator, PaletteKeyType},
@@ -10,12 +10,6 @@ pub(crate) struct PaletteEntry<T> {
     count: usize,
     /// Initialized iff `count` is non-zero.
     element: MaybeUninit<T>,
-}
-
-impl<T> PaletteEntry<T> {
-    pub(crate) fn count(&self) -> usize {
-        self.count
-    }
 }
 
 impl<T> Default for PaletteEntry<T> {
@@ -273,36 +267,37 @@ where
             })
     }
 
-    pub(crate) fn key_of_most_instanced_element(&self) -> Option<K> {
-        self.vec
-            .iter()
-            .enumerate()
-            .max_by_key(|(_key_value, palette_entry)| palette_entry.count)
-            .and_then(|(key_value, palette_entry)| {
-                (0 < palette_entry.count).then_some(K::with_value(key_value))
-            })
-    }
-
-    pub(crate) fn key_of_least_instanced_element(&self) -> Option<K> {
-        self.vec
-            .iter()
-            .enumerate()
-            .min_by_key(|(_key_value, palette_entry)| palette_entry.count)
-            .and_then(|(key_value, palette_entry)| {
-                (0 < palette_entry.count).then_some(K::with_value(key_value))
-            })
-    }
-
-    /// Returns an iterator over the keys currently unused by the palette.
-    /// The iterator will go on.
-    pub(crate) fn unused_keys(&self) -> impl Iterator<Item = K> + '_ {
-        self.vec
+    pub(crate) fn counts_and_keys_sorted_by_counts(
+        &self,
+        smallest_counts_first: bool,
+    ) -> Vec<CountAndKey<K>> {
+        let mut counts_and_keys: Vec<_> = self
+            .vec
             .iter()
             .enumerate()
             .filter_map(|(key_value, palette_entry)| {
-                (palette_entry.count == 0).then_some(K::with_value(key_value))
+                (0 < palette_entry.count).then_some(CountAndKey {
+                    count: palette_entry.count,
+                    key: K::with_value(key_value),
+                })
             })
-            .chain((self.vec.len()..).map(K::with_value))
+            .collect();
+        if smallest_counts_first {
+            counts_and_keys.sort_by(|left, right| left.count.cmp(&right.count));
+        } else {
+            counts_and_keys.sort_by(|left, right| right.count.cmp(&left.count));
+        }
+        counts_and_keys
+    }
+
+    pub(crate) fn highest_used_key(&self) -> Option<K> {
+        self.vec
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(key_value, palette_entry)| {
+                (0 < palette_entry.count).then_some(K::with_value(key_value))
+            })
     }
 
     pub(crate) fn remove_entry(&mut self, key: K) -> Option<PaletteEntry<T>> {
@@ -326,5 +321,31 @@ where
         };
         *palette_entry_to_overwrite = palette_entry;
         key
+    }
+}
+
+pub(crate) struct CountAndKey<K>
+where
+    K: PaletteKeyType,
+{
+    pub(crate) count: usize,
+    pub(crate) key: K,
+}
+
+impl<T, K> Debug for Palette<T, K>
+where
+    T: Clone + Eq + Debug,
+    K: PaletteKeyType,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug_map = f.debug_map();
+        for (key_value, palette_entry) in self.vec.iter().enumerate() {
+            if 0 < palette_entry.count {
+                // SAFETY: The entry's `count` is non zero so the element is initialized.
+                let element = unsafe { palette_entry.element.assume_init_ref() };
+                debug_map.entry(&key_value, element);
+            }
+        }
+        debug_map.finish()
     }
 }

@@ -36,6 +36,16 @@ impl PaletteKeyType for Key {
     }
 }
 
+/// Returns the minimal size (in bits) of key representation
+/// needed to support this many key values.
+pub(crate) fn keys_size_for_this_many_keys(how_many: usize) -> usize {
+    if let Some(max_key_value) = how_many.checked_sub(1) {
+        Key::with_value(max_key_value).min_size()
+    } else {
+        0
+    }
+}
+
 /// OPSK means Outlier Palette Side Key,
 /// it represents a key of an outlier element.
 /// Such keys are not present in the `KeyVec`, but they are present in the index map
