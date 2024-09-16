@@ -219,16 +219,16 @@ impl KeyVec {
         }
     }
 
-    /// Appends the given `key` to the end of the `KeyVec`.
+    /// Appends the given `key` to the end of the `KeyVec`, `how_many` times.
     ///
     /// # Panics
     ///
     /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
-    pub(crate) fn _push(&mut self, key: Key) {
+    pub(crate) fn _push(&mut self, key: Key, how_many: usize) {
         let key_min_size = key.min_size();
         if key_min_size <= self.keys_size {
             // SAFETY: The key fits.
-            unsafe { self.push_unchecked(key) }
+            unsafe { self.push_unchecked(key, how_many) }
         } else {
             // The key doesn't fit, `keys_size` is too small.
             panic!(
@@ -238,27 +238,33 @@ impl KeyVec {
         }
     }
 
-    /// Appends the given `key` to the end of the `KeyVec`.
+    /// Appends the given `key` to the end of the `KeyVec`, `how_many` times.
     ///
     /// # Safety
     ///
     /// `key_min_size(key)` must be `<= self.keys_size()`.
-    pub(crate) unsafe fn push_unchecked(&mut self, key: Key) {
+    pub(crate) unsafe fn push_unchecked(&mut self, key: Key, how_many: usize) {
         if self.keys_size == 0 {
             debug_assert_eq!(key, Key::with_value(0));
             // SAFETY: `keys_size` is zero so `len` is the active field.
-            unsafe { self.vec_or_len.len += 1 }
+            unsafe { self.vec_or_len.len += how_many }
         } else {
             debug_assert!(key.min_size() <= self.keys_size);
-            let key_le = key.value.to_le();
-            let key_bits = key_le.as_raw_slice();
-            let key_bits: &BitSlice<usize, Lsb0> = BitSlice::from_slice(key_bits);
-            // `keys_size` is <= `Key`'s size in bits, this won't go out-of-bounds.
-            let key_bits = &key_bits[0..self.keys_size];
             self.vec_or_len
                 .vec
                 .deref_mut()
-                .extend_from_bitslice(key_bits);
+                .reserve(how_many * self.keys_size);
+            for _ in 0..how_many {
+                let key_le = key.value.to_le();
+                let key_bits = key_le.as_raw_slice();
+                let key_bits: &BitSlice<usize, Lsb0> = BitSlice::from_slice(key_bits);
+                // `keys_size` is <= `Key`'s size in bits, this won't go out-of-bounds.
+                let key_bits = &key_bits[0..self.keys_size];
+                self.vec_or_len
+                    .vec
+                    .deref_mut()
+                    .extend_from_bitslice(key_bits);
+            }
         }
     }
 
@@ -496,13 +502,13 @@ mod tests {
     fn key_size_zero_remains_len() {
         let mut key_vec = KeyVec::new();
         assert_is_len(&key_vec, 0);
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         assert_is_len(&key_vec, 1);
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         assert_is_len(&key_vec, 2);
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         assert_is_len(&key_vec, 3);
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         assert_is_len(&key_vec, 4);
     }
 
@@ -510,22 +516,22 @@ mod tests {
     fn key_size_nonzero_switches_to_vec() {
         let mut key_vec = KeyVec::new();
         assert_is_len(&key_vec, 0);
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         assert_is_len(&key_vec, 1);
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         assert_is_len(&key_vec, 2);
         key_vec.change_keys_size(1);
         assert_is_vec(&key_vec, 2);
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         assert_is_vec(&key_vec, 3);
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         assert_is_vec(&key_vec, 4);
     }
 
     #[test]
     fn can_push_max_key_for_any_size() {
         let mut key_vec = KeyVec::new();
-        key_vec._push(Key::with_value(0));
+        key_vec._push(Key::with_value(0), 1);
         for key_size in 1..=usize::BITS as usize {
             let mak_key_for_given_size = Key::with_value({
                 let mut value = 0;
@@ -535,7 +541,7 @@ mod tests {
                 value
             });
             key_vec.change_keys_size(key_size);
-            key_vec._push(mak_key_for_given_size);
+            key_vec._push(mak_key_for_given_size, 1);
         }
     }
 
@@ -550,5 +556,32 @@ mod tests {
     fn can_set_key_size_to_max() {
         let mut key_vec = KeyVec::new();
         key_vec.change_keys_size(usize::BITS as usize);
+    }
+
+    #[test]
+    fn push_many() {
+        let mut key_vec = KeyVec::new();
+        key_vec._push(Key::with_value(0), 1000);
+        assert_eq!(key_vec.len(), 1000);
+        key_vec.change_keys_size(1);
+        key_vec._push(Key::with_value(1), 1000);
+        assert_eq!(key_vec.len(), 2000);
+        for i in 0..1000 {
+            assert_eq!(key_vec.get(i), Some(Key::with_value(0)));
+        }
+        for i in 1000..2000 {
+            assert_eq!(key_vec.get(i), Some(Key::with_value(1)));
+        }
+    }
+
+    #[test]
+    fn push_zero() {
+        let mut key_vec = KeyVec::new();
+        key_vec._push(Key::with_value(0), 0);
+        assert_eq!(key_vec.len(), 0);
+        key_vec.change_keys_size(1);
+        key_vec._push(Key::with_value(1), 0);
+        assert_eq!(key_vec.len(), 0);
+        assert_eq!(key_vec.get(0), None);
     }
 }

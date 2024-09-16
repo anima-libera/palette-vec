@@ -136,17 +136,21 @@ where
         unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
     }
 
-    /// Appends the given `element` to the back of the `PalVec`'s array.
+    /// Appends the given `element` to the back of the `PalVec`'s array, `how_many` times.
     ///
     /// # Panics
     ///
     /// Panics if the palette entry count for `element` becomes more than `usize::MAX`.
-    pub fn push(&mut self, element: impl ViewToOwned<T>) {
+    pub fn push(&mut self, element: impl ViewToOwned<T>, how_many: usize) {
+        if how_many == 0 {
+            return;
+        }
+
         let key = self.palette.add_element_instances(
             element,
             {
-                // SAFETY: 1 is not 0.
-                unsafe { NonZeroUsize::new_unchecked(1) }
+                // SAFETY: If `how_many` were zero then we would have returned earlier.
+                unsafe { NonZeroUsize::new_unchecked(how_many) }
             },
             &mut KeyAllocator {
                 key_vec: &mut self.key_vec,
@@ -154,7 +158,7 @@ where
             },
         );
         // SAFETY: `KeyAllocator` made sure that the key fits.
-        unsafe { self.key_vec.push_unchecked(key) }
+        unsafe { self.key_vec.push_unchecked(key, how_many) }
     }
 
     /// Removes the last element from the `PalVec`'s array and returns it,
@@ -246,16 +250,16 @@ mod tests {
     fn push_and_len() {
         let mut palvec: PalVec<()> = PalVec::new();
         assert_eq!(palvec.len(), 0);
-        palvec.push(());
+        palvec.push((), 1);
         assert_eq!(palvec.len(), 1);
-        palvec.push(());
+        palvec.push((), 1);
         assert_eq!(palvec.len(), 2);
     }
 
     #[test]
     fn push_and_get() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(42);
+        palvec.push(42, 1);
         assert_eq!(palvec.get(0), Some(&42));
     }
 
@@ -263,8 +267,8 @@ mod tests {
     fn get_out_of_bounds_is_none() {
         let mut palvec: PalVec<()> = PalVec::new();
         assert!(palvec.get(0).is_none());
-        palvec.push(());
-        palvec.push(());
+        palvec.push((), 1);
+        palvec.push((), 1);
         assert!(palvec.get(0).is_some());
         assert!(palvec.get(1).is_some());
         assert!(palvec.get(2).is_none());
@@ -279,8 +283,8 @@ mod tests {
     #[test]
     fn push_and_pop_strings() {
         let mut palvec: PalVec<String> = PalVec::new();
-        palvec.push("uwu");
-        palvec.push(String::from("owo"));
+        palvec.push("uwu", 1);
+        palvec.push(String::from("owo"), 1);
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("owo"));
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("uwu"));
         assert_eq!(palvec.pop().map_as_ref(), None);
@@ -289,8 +293,8 @@ mod tests {
     #[test]
     fn push_and_pop_numbers() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         assert_eq!(palvec.pop().map_copied(), Some(5));
         assert_eq!(palvec.pop().map_copied(), Some(8));
         assert_eq!(palvec.pop().map_as_ref(), None);
@@ -299,8 +303,8 @@ mod tests {
     #[test]
     fn set_and_get() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         palvec.set(0, 0);
         palvec.set(1, 1);
         assert_eq!(palvec.get(0), Some(&0));
@@ -311,8 +315,8 @@ mod tests {
     #[should_panic]
     fn set_out_of_bounds_panic() {
         let mut palvec: PalVec<()> = PalVec::new();
-        palvec.push(());
-        palvec.push(());
+        palvec.push((), 1);
+        palvec.push((), 1);
         palvec.set(2, ());
     }
 
@@ -331,7 +335,7 @@ mod tests {
         assert_eq!(palvec.len(), epic_len - 1);
         palvec.set(epic_len / 2, funi);
         assert_eq!(palvec.get(epic_len / 2).map(|s| s.as_str()), Some(funi));
-        palvec.push(funi);
+        palvec.push(funi, 1);
         assert_eq!(palvec.len(), epic_len);
     }
 
@@ -339,14 +343,14 @@ mod tests {
     #[should_panic]
     fn entry_count_too_big() {
         let mut palvec: PalVec<()> = PalVec::with_len((), usize::MAX);
-        palvec.push(());
+        palvec.push((), 1);
     }
 
     #[test]
     fn push_adds_to_palette() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         assert!(palvec.palette.contains(&8));
         assert!(palvec.palette.contains(&5));
     }
@@ -354,8 +358,8 @@ mod tests {
     #[test]
     fn pop_removes_from_palette() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         palvec.pop();
         palvec.pop();
         assert!(!palvec.palette.contains(&8));
@@ -366,7 +370,7 @@ mod tests {
     fn many_palette_entries() {
         let mut palvec: PalVec<i32> = PalVec::new();
         for i in 0..50 {
-            palvec.push(i);
+            palvec.push(i, 1);
         }
         for i in (0..50).rev() {
             dbg!(i);
@@ -381,7 +385,7 @@ mod tests {
         let mut palvec: PalVec<i32> = PalVec::new();
         for i in 2..50 {
             for j in 0..i {
-                palvec.push(j);
+                palvec.push(j, 1);
             }
             for j in (0..i).rev() {
                 dbg!(palvec.len());
@@ -395,8 +399,8 @@ mod tests {
     #[test]
     fn single_index() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
     }
@@ -404,8 +408,8 @@ mod tests {
     #[test]
     fn clone() {
         let mut palvec: PalVec<i32> = PalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         let palvec = palvec.clone();
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);

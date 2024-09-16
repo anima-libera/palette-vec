@@ -3,14 +3,6 @@ name = "palette-vec"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-name = "palette_vec"
-path = "src/lib.rs"
-
-[[bin]]
-name = "benchmarks"
-path = "src/benchmarks.rs"
-
 [dependencies]
 bitvec = "1.0.1"
 fxhash = "0.2.1"

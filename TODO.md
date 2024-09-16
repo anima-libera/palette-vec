@@ -26,7 +26,7 @@
 - `iter`, `windows`, `chunks`
 - `drain`
 - `clear`
-- `push_multiple(element, how_many)`, `set_multiple`, etc.
+- `set_multiple`, etc.
 
 ## Macros
 Something like `palvec![elem; N]` and `palvec![elem, elem, elem, ...]`.
@@ -47,6 +47,7 @@ Test everything, stress test everything, with all the types and settings.
 
 ## Benchmarks
 Make benchmarks of performance and memory usage of Vec, PalVec and OutPalVec in various stress tests.
+WIP
 
 ## Documentation and examples
 - Explain the usecases of palette compression, large arrays of few different values that would even be potentially big, and in practice: chunks of a 3D/4D voxel world (Minecraft does it), large voxel scenes, chunks of a 2D powder game with a large map, the large grid of a 2D/3D celular automata, some other specific needs (such as a large ordered list of words/whatever that should be read and written fast but without much insertion/removals), etc.

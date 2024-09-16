@@ -315,8 +315,12 @@ where
         self.consider_this_occasion_to_maybe_perform_memory_optimization();
     }
 
-    pub fn push(&mut self, element: impl ViewToOwned<T>) {
+    pub fn push(&mut self, element: impl ViewToOwned<T>, how_many: usize) {
         // TODO: Factorize the duplicated code with `set`, there is a lot of it.
+
+        if how_many == 0 {
+            return;
+        }
 
         let key_of_element_to_add =
             if self.common_palette.contains(&element) || M::NEW_ELEMENT_BE_COMMON {
@@ -324,8 +328,8 @@ where
                 self.common_palette.add_element_instances(
                     element,
                     {
-                        // SAFETY: 1 is not 0.
-                        unsafe { NonZeroUsize::new_unchecked(1) }
+                        // SAFETY: If `how_many` were zero then we would have returned earlier.
+                        unsafe { NonZeroUsize::new_unchecked(how_many) }
                     },
                     &mut KeyAllocator {
                         key_vec: &mut self.key_vec,
@@ -337,8 +341,8 @@ where
                 let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
                     element,
                     {
-                        // SAFETY: 1 is not 0.
-                        unsafe { NonZeroUsize::new_unchecked(1) }
+                        // SAFETY: If `how_many` were zero then we would have returned earlier.
+                        unsafe { NonZeroUsize::new_unchecked(how_many) }
                     },
                     &mut OpskAllocator,
                 );
@@ -362,7 +366,7 @@ where
             };
 
         // SAFETY: `KeyAllocator` made sure that the key fits.
-        unsafe { self.key_vec.push_unchecked(key_of_element_to_add) }
+        unsafe { self.key_vec.push_unchecked(key_of_element_to_add, how_many) }
 
         self.consider_this_occasion_to_maybe_perform_memory_optimization();
     }
@@ -758,16 +762,16 @@ mod tests {
     fn push_and_len() {
         let mut palvec: OutPalVec<()> = OutPalVec::new();
         assert_eq!(palvec.len(), 0);
-        palvec.push(());
+        palvec.push((), 1);
         assert_eq!(palvec.len(), 1);
-        palvec.push(());
+        palvec.push((), 1);
         assert_eq!(palvec.len(), 2);
     }
 
     #[test]
     fn push_and_get() {
         let mut palvec: OutPalVec<i32> = OutPalVec::new();
-        palvec.push(42);
+        palvec.push(42, 1);
         assert_eq!(palvec.get(0, None), Some(&42));
     }
 
@@ -775,8 +779,8 @@ mod tests {
     fn get_out_of_bounds_is_none() {
         let mut palvec: OutPalVec<()> = OutPalVec::new();
         assert!(palvec.get(0, None).is_none());
-        palvec.push(());
-        palvec.push(());
+        palvec.push((), 1);
+        palvec.push((), 1);
         assert!(palvec.get(0, None).is_some());
         assert!(palvec.get(1, None).is_some());
         assert!(palvec.get(2, None).is_none());
@@ -791,8 +795,8 @@ mod tests {
     #[test]
     fn push_and_pop_strings() {
         let mut palvec: OutPalVec<String> = OutPalVec::new();
-        palvec.push("uwu");
-        palvec.push(String::from("owo"));
+        palvec.push("uwu", 1);
+        palvec.push(String::from("owo"), 1);
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("owo"));
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("uwu"));
         assert_eq!(palvec.pop().map_as_ref(), None);
@@ -801,8 +805,8 @@ mod tests {
     #[test]
     fn push_and_pop_numbers() {
         let mut palvec: OutPalVec<i32> = OutPalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         assert_eq!(palvec.pop().map_copied(), Some(5));
         assert_eq!(palvec.pop().map_copied(), Some(8));
         assert_eq!(palvec.pop().map_as_ref(), None);
@@ -812,8 +816,8 @@ mod tests {
     #[should_panic]
     fn set_out_of_bounds_panic() {
         let mut palvec: OutPalVec<()> = OutPalVec::new();
-        palvec.push(());
-        palvec.push(());
+        palvec.push((), 1);
+        palvec.push((), 1);
         palvec.set(2, (), None);
     }
 
@@ -842,8 +846,8 @@ mod tests {
     #[test]
     fn single_index() {
         let mut palvec: OutPalVec<i32> = OutPalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
     }
@@ -851,8 +855,8 @@ mod tests {
     #[test]
     fn clone() {
         let mut palvec: OutPalVec<i32> = OutPalVec::new();
-        palvec.push(8);
-        palvec.push(5);
+        palvec.push(8, 1);
+        palvec.push(5, 1);
         let palvec = palvec.clone();
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
@@ -882,7 +886,7 @@ mod tests {
         let mut vec_to_compare = vec![];
         for i in 0..100 {
             for _j in 0..i {
-                palvec.push(-i);
+                palvec.push(-i, 1);
                 vec_to_compare.push(-i);
             }
         }
@@ -898,7 +902,7 @@ mod tests {
         let mut vec_to_compare = vec![];
         for i in 0..3 {
             for _j in 0..1000 {
-                palvec.push(-i);
+                palvec.push(-i, 1);
                 vec_to_compare.push(-i);
             }
         }
@@ -906,7 +910,7 @@ mod tests {
         // They default to be common (due to the policy) but they should be planed to
         // be moved to the outliers.
         for value in [-10, -10, -10, -11, -11, -12, -13, -14, -15] {
-            palvec.push(value);
+            palvec.push(value, 1);
             vec_to_compare.push(value);
         }
         let plan = palvec.compute_memory_optimization_plan();
@@ -929,7 +933,7 @@ mod tests {
         let mut vec_to_compare = vec![];
         for i in 0..3 {
             for _j in 0..1000 {
-                palvec.push(-i);
+                palvec.push(-i, 1);
                 vec_to_compare.push(-i);
             }
         }
@@ -937,7 +941,7 @@ mod tests {
         // They default to be common (due to the policy) but they should be planed to
         // be moved to the outliers.
         for value in [-10, -10, -10, -11, -11, -12, -13, -14, -15] {
-            palvec.push(value);
+            palvec.push(value, 1);
             vec_to_compare.push(value);
         }
         palvec.perform_memory_opimization();
