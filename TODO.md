@@ -26,6 +26,7 @@
 - `iter`, `windows`, `chunks`
 - `drain`
 - `clear`
+- `push_multiple(element, how_many)`, `set_multiple`, etc.
 
 ## Macros
 Something like `palvec![elem; N]` and `palvec![elem, elem, elem, ...]`.
@@ -66,10 +67,8 @@ This would add memory usage on the palette, but make performances better for wri
 Instead of a reverse hash map, what if:
 Statically opt-in feature that allows to get "adders" for elements. An adder corresponds to an element and knows its key (in the PalVec it is bound to). When using `set` or `push` to add an element for which we have an adder, then we can use the adder's knowledge of the element's key to find it immediately in the palette which makes it fast (instead of the slow way of iterating thorugh the palette and checking for equality with each palette entry element). We have to make sure that the adder's key is updated (or at least invalidated) when the element's key changes.
 
-## Index map
-Provide an alternative to the HashMap for the index map of OutPalVec. Something like a sorted vec of small (index, opsk) pairs (small as in, we can use u32 or even u16 for these if the KeyVec and outlier palette are small enough), it would be tricky to make it fast to access and modify but it would enable epic memory usage optimizations:
-- Smaller memory usage of the index map itself.
-- Knowing exactly the memory usage of the index map allows to think in terms of memory usage when considering to move palette entries around the outlier and common palettes. We can take decisions that are literally the best memory usage reducing decisions instead of decisions based on some half-guessed heuristics on the number of outliers and all (due to the memory usage of an hashmap index map being mysterious).
+## KeyVec `change_keys_size` taking an `Option<FnMut(Key) -> Key>`
+We are iterating over all the keys to change their size. If we do this for like an `OutPalVec` memory optimization then we should also change the keys there at the same time instead of iterating twice (think about the cache!).
 
 ## Shrinking
 Add methods to shrink the allocations and use smaller keys to reduce memory usage.

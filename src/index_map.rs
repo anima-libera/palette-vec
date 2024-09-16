@@ -427,6 +427,10 @@ where
         self.vec.capacity()
     }
 
+    /// Returns what `self.vec.binary_search_by_key` would return.
+    ///
+    /// Uses the hint given by the [`IndexMapAccessOptimizer`] if any and if it is right
+    /// to avoid having to do the binary search if we can.
     fn access(
         &self,
         index_in_key_vec: N,

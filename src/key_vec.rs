@@ -341,13 +341,15 @@ impl KeyVec {
             }
         } else {
             match self.keys_size.cmp(&new_keys_size) {
-                Ordering::Equal => {}
+                Ordering::Equal => {
+                    // Nothing to do.
+                }
                 Ordering::Less => {
+                    // The `keys_size` has to increase.
+                    let old_keys_size = self.keys_size;
+                    let len = self.len();
                     // SAFETY: `keys_size` is non-zero so `vec` is the active field.
                     unsafe {
-                        // The `keys_size` has to increase.
-                        let old_keys_size = self.keys_size;
-                        let len = self.len();
                         // Here we break some `KeyVec` invariants.
                         // We first resize the `vec` to get enough room to make all its keys bigger.
                         self.vec_or_len
@@ -381,7 +383,32 @@ impl KeyVec {
                         }
                     }
                 }
-                Ordering::Greater => todo!("`keys_size` has to decrease"),
+                Ordering::Greater => {
+                    // The `keys_size` has to decrease.
+                    let old_keys_size = self.keys_size;
+                    let len = self.len();
+                    // SAFETY: `keys_size` is non-zero so `vec` is the active field.
+                    unsafe {
+                        for index in 0..len {
+                            // Get the last not-yet moved key from its old position.
+                            let key: Key = {
+                                let bit_range = Self::key_bit_range(old_keys_size, index);
+                                Key::with_value(self.vec_or_len.vec.deref_mut()[bit_range].load())
+                            };
+                            debug_assert!(key.min_size() <= new_keys_size);
+                            // Move the key to its new position and
+                            // represent it with the new key size.
+                            {
+                                let bit_range = Self::key_bit_range(new_keys_size, index);
+                                self.vec_or_len.vec.deref_mut()[bit_range].store(key.value);
+                            }
+                        }
+                        self.vec_or_len
+                            .vec
+                            .deref_mut()
+                            .resize(len * new_keys_size, false);
+                    }
+                }
             }
         }
         self.keys_size = new_keys_size;

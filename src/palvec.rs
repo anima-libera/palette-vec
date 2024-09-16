@@ -191,6 +191,16 @@ where
     pub fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
         self.palette.contains(element)
     }
+
+    /// Return the amount of used memory (in bytes), excluding `self` and the palette.
+    ///
+    /// May be smaller than the amount of actually allocated memory.
+    pub fn used_memory(&self) -> usize {
+        let key_vec_memory_in_bits = self.key_vec.len() * self.key_vec.keys_size();
+        let key_vec_memory_in_bytes = key_vec_memory_in_bits.div_ceil(8);
+        #[allow(clippy::let_and_return)]
+        key_vec_memory_in_bytes
+    }
 }
 
 impl<T> Default for PalVec<T>

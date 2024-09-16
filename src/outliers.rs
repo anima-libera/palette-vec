@@ -14,10 +14,10 @@ use crate::{
 
 // TODO: Better doc!
 #[derive(Clone)]
-pub struct OutPalVec<T, MMP = MemoryManagementPolicyEveryNOccasions>
+pub struct OutPalVec<T, M = AutoMemoryOptimizationPolicyNever>
 where
     T: Clone + Eq + Debug,
-    MMP: MemoryManagementPolicy,
+    M: AutoMemoryOptimizationPolicy,
 {
     /// Instances of `outlier_key` are handled by the `index_to_opsk_map` and the `outlier_palette`
     /// and other keys are handled by `palette`.
@@ -27,16 +27,10 @@ where
     outlier_key: Option<Key>,
     outlier_palette: Palette<T, Opsk>,
     /// Exactly every instance of `outlier_key` in the `key_vec` has an entry here.
-    ///
-    /// TODO: Maybe provide an alternative to the hash map, like a sorted vec. This would
-    /// allow to really get its memory usage smaller, and also to know its memory usage
-    /// with precision, which enables the best possible memory usage optimization for this whole
-    /// thing as we could think in terms of smaller memory usage to decide when to move elements
-    /// between the outlier and common palettes.
     index_to_opsk_map: IndexMap,
     /// Memory management operations are potentially expensive.
     /// This policy will decide if such operations are performed at each occasion.
-    memory_management_policy: MMP,
+    memory_management_policy: M,
 }
 
 /// Mutable cached information that provides hints to internal components of an `OutPalVec`
@@ -70,12 +64,12 @@ fn as_index_map_access<'a>(
     }
 }
 
-/// Trait that a memory management policy type
+/// Trait that a automatic memory optimization policy type
 /// passed to the corresponding `OutPalVec` type parameter must have.
 ///
 /// It describes how often the `OutPalVec` will perform
-/// potentially expensive memory management operations on its own.
-pub trait MemoryManagementPolicy
+/// potentially expensive memory optimization operations on its own.
+pub trait AutoMemoryOptimizationPolicy
 where
     Self: Clone,
 {
@@ -83,63 +77,65 @@ where
 
     const NEW_ELEMENT_BE_COMMON: bool;
 
-    /// Whenever the `OutPalVec` has an occasion to perform memory management operations,
+    /// Whenever the `OutPalVec` has an occasion to perform memory optimization operations,
     /// this method is asked if that should be done.
-    fn perform_memory_management_on_this_occasion(&mut self) -> bool;
+    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool;
 }
 
-/// The `OutPalVec` will never perform memory management operations on its own.
+/// The `OutPalVec` will never perform memory optimization operations on its own.
 ///
-/// With such policy, it is important to manually trigger the memory management method of
+/// With such policy, it is important to manually trigger the memory optimization method of
 /// the `OutPalVec` or else it will remain in a state no better than a `PalVec`.
 /// Use this policy when you know what you are doing
-/// and that the times you manually trigger memory management are sufficient.
+/// and that the times you manually trigger memory optimization are sufficient.
 #[derive(Clone)]
-pub struct MemoryManagementPolicyNever;
-impl MemoryManagementPolicy for MemoryManagementPolicyNever {
+pub struct AutoMemoryOptimizationPolicyNever;
+impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyNever {
     fn new() -> Self {
-        MemoryManagementPolicyNever
+        AutoMemoryOptimizationPolicyNever
     }
 
     const NEW_ELEMENT_BE_COMMON: bool = true;
 
-    fn perform_memory_management_on_this_occasion(&mut self) -> bool {
+    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
         false
     }
 }
 
-/// The `OutPalVec` will perform memory management operations every time it gets the chance.
+/// The `OutPalVec` will perform memory optimization operations every time it gets the chance.
 ///
-/// This is probably a bad idea, [`MemoryManagementPolicyEveryNOccasions`] is probably better.
+/// This is probably bad, [`AutoMemoryOptimizationPolicyEveryNOccasions`] is probably better.
 #[derive(Clone)]
-pub struct MemoryManagementPolicyAlways;
-impl MemoryManagementPolicy for MemoryManagementPolicyAlways {
+pub struct AutoMemoryOptimizationPolicyAlways;
+impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyAlways {
     fn new() -> Self {
-        MemoryManagementPolicyAlways
+        AutoMemoryOptimizationPolicyAlways
     }
 
     const NEW_ELEMENT_BE_COMMON: bool = false;
 
-    fn perform_memory_management_on_this_occasion(&mut self) -> bool {
+    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
         true
     }
 }
 
-/// The `OutPalVec` will perform memory management operations once every N occasions.
+/// The `OutPalVec` will perform memory optimization operations once every N occasions.
 ///
 /// The value of `N` might be something to be tweaked.
 #[derive(Clone)]
-pub struct MemoryManagementPolicyEveryNOccasions<const N: usize = 100> {
+pub struct AutoMemoryOptimizationPolicyEveryNOccasions<const N: usize = 100> {
     counter: usize,
 }
-impl<const N: usize> MemoryManagementPolicy for MemoryManagementPolicyEveryNOccasions<N> {
+impl<const N: usize> AutoMemoryOptimizationPolicy
+    for AutoMemoryOptimizationPolicyEveryNOccasions<N>
+{
     fn new() -> Self {
-        MemoryManagementPolicyEveryNOccasions { counter: 0 }
+        AutoMemoryOptimizationPolicyEveryNOccasions { counter: 0 }
     }
 
     const NEW_ELEMENT_BE_COMMON: bool = false;
 
-    fn perform_memory_management_on_this_occasion(&mut self) -> bool {
+    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
         self.counter += 1;
         if N <= self.counter {
             self.counter = 0;
@@ -150,10 +146,10 @@ impl<const N: usize> MemoryManagementPolicy for MemoryManagementPolicyEveryNOcca
     }
 }
 
-impl<T, MMP> OutPalVec<T, MMP>
+impl<T, M> OutPalVec<T, M>
 where
     T: Clone + Eq + Debug,
-    MMP: MemoryManagementPolicy,
+    M: AutoMemoryOptimizationPolicy,
 {
     pub fn new() -> Self {
         Self {
@@ -162,7 +158,7 @@ where
             outlier_key: None,
             outlier_palette: Palette::new(),
             index_to_opsk_map: IndexMap::new(),
-            memory_management_policy: MMP::new(),
+            memory_management_policy: M::new(),
         }
     }
 
@@ -179,7 +175,7 @@ where
                 outlier_key: None,
                 outlier_palette: Palette::new(),
                 index_to_opsk_map: IndexMap::new(),
-                memory_management_policy: MMP::new(),
+                memory_management_policy: M::new(),
             }
         }
     }
@@ -270,7 +266,7 @@ where
 
         // Add new element.
         let key_of_element_to_add =
-            if self.common_palette.contains(&element) || MMP::NEW_ELEMENT_BE_COMMON {
+            if self.common_palette.contains(&element) || M::NEW_ELEMENT_BE_COMMON {
                 // Already a common element, or we decided that all new elements start as common.
                 self.common_palette.add_element_instances(
                     element,
@@ -316,14 +312,14 @@ where
         // and `KeyAllocator` made sure that the key fits.
         unsafe { self.key_vec.set_unchecked(index, key_of_element_to_add) }
 
-        self.consider_this_occasion_to_maybe_perform_memory_management();
+        self.consider_this_occasion_to_maybe_perform_memory_optimization();
     }
 
     pub fn push(&mut self, element: impl ViewToOwned<T>) {
         // TODO: Factorize the duplicated code with `set`, there is a lot of it.
 
         let key_of_element_to_add =
-            if self.common_palette.contains(&element) || MMP::NEW_ELEMENT_BE_COMMON {
+            if self.common_palette.contains(&element) || M::NEW_ELEMENT_BE_COMMON {
                 // Already a common element, or we decided that all new elements start as common.
                 self.common_palette.add_element_instances(
                     element,
@@ -368,7 +364,7 @@ where
         // SAFETY: `KeyAllocator` made sure that the key fits.
         unsafe { self.key_vec.push_unchecked(key_of_element_to_add) }
 
-        self.consider_this_occasion_to_maybe_perform_memory_management();
+        self.consider_this_occasion_to_maybe_perform_memory_optimization();
     }
 
     pub fn pop(&mut self) -> Option<BorrowedOrOwned<'_, T>> {
@@ -395,16 +391,27 @@ where
         })
     }
 
-    fn consider_this_occasion_to_maybe_perform_memory_management(&mut self) {
+    /// Return the amount of used memory (in bytes), excluding `self` and the palettes.
+    ///
+    /// May be smaller than the amount of actually allocated memory.
+    pub fn used_memory(&self) -> usize {
+        let key_vec_memory_in_bits = self.key_vec.len() * self.key_vec.keys_size();
+        let key_vec_memory_in_bytes = key_vec_memory_in_bits.div_ceil(8);
+        let index_map_memory_in_bytes =
+            self.index_to_opsk_map.len() * self.index_to_opsk_map.entry_size();
+        key_vec_memory_in_bytes + index_map_memory_in_bytes
+    }
+
+    fn consider_this_occasion_to_maybe_perform_memory_optimization(&mut self) {
         if self
             .memory_management_policy
-            .perform_memory_management_on_this_occasion()
+            .perform_memory_optimization_on_this_occasion()
         {
-            self.perform_memory_management();
+            self.perform_memory_opimization();
         }
     }
 
-    fn compute_memory_optimizing_plan(&self) -> MemoryOptimizingPlan {
+    fn compute_memory_optimization_plan(&self) -> MemoryOptimizationPlan {
         let commons = self.common_palette.len();
         let outliers = self.outlier_palette.len();
 
@@ -418,6 +425,7 @@ where
 
         let mut best_memory_in_bits = None;
         let mut best_c2o_and_o2c = None;
+        let mut best_new_keys_size_in_bits = None;
         for how_many_common_to_outlier in 0..=commons {
             for how_many_outlier_to_common in 0..=outliers {
                 let new_common_entry_count =
@@ -454,21 +462,24 @@ where
                     best_memory_in_bits = Some(new_memory_in_bits);
                     best_c2o_and_o2c =
                         Some((how_many_common_to_outlier, how_many_outlier_to_common));
+                    best_new_keys_size_in_bits = Some(new_keys_size_in_bits);
                 }
             }
         }
 
         let (how_many_common_to_outlier, how_many_outlier_to_common) = best_c2o_and_o2c.unwrap();
+        let new_keys_size_in_bits = best_new_keys_size_in_bits.unwrap();
 
-        MemoryOptimizingPlan {
+        MemoryOptimizationPlan {
             counts_and_keys_common,
             counts_and_keys_outlier,
+            new_keys_size_in_bits,
             how_many_common_to_outlier,
             how_many_outlier_to_common,
         }
     }
 
-    fn apply_memory_optimizing_plan(&mut self, plan: MemoryOptimizingPlan) {
+    fn apply_memory_optimization_plan(&mut self, plan: MemoryOptimizationPlan) {
         let old_common_highest_used_key = self.common_palette.highest_used_key();
         let old_outlier_highest_used_key = self.outlier_palette.highest_used_key();
 
@@ -617,6 +628,8 @@ where
         //
         // Now we use the key rewrite tables to rewrite the key vec and the the index map.
 
+        self.outlier_key = new_outlier_key;
+
         let mut index_map_local_access = IndexMapLocalAccessOptimizer::new();
         let mut index_map_access = IndexMapAccessOptimizer::Local(&mut index_map_local_access);
         for index_in_key_vec in 0..self.key_vec.len() {
@@ -672,18 +685,19 @@ where
             }
         }
 
-        self.outlier_key = new_outlier_key;
+        self.key_vec.change_keys_size(plan.new_keys_size_in_bits);
     }
 
-    pub fn perform_memory_management(&mut self) {
-        let plan = self.compute_memory_optimizing_plan();
-        self.apply_memory_optimizing_plan(plan);
+    pub fn perform_memory_opimization(&mut self) {
+        let plan = self.compute_memory_optimization_plan();
+        self.apply_memory_optimization_plan(plan);
     }
 }
 
-struct MemoryOptimizingPlan {
+struct MemoryOptimizationPlan {
     counts_and_keys_common: Vec<CountAndKey<Key>>,
     counts_and_keys_outlier: Vec<CountAndKey<Opsk>>,
+    new_keys_size_in_bits: usize,
     how_many_common_to_outlier: usize,
     how_many_outlier_to_common: usize,
 }
@@ -863,7 +877,7 @@ mod tests {
 
     #[test]
     fn memory_management() {
-        let mut palvec: OutPalVec<isize, MemoryManagementPolicyEveryNOccasions<20>> =
+        let mut palvec: OutPalVec<isize, AutoMemoryOptimizationPolicyEveryNOccasions<20>> =
             OutPalVec::new();
         let mut vec_to_compare = vec![];
         for i in 0..100 {
@@ -880,7 +894,7 @@ mod tests {
 
     #[test]
     fn memory_optimization_plan() {
-        let mut palvec: OutPalVec<isize, MemoryManagementPolicyNever> = OutPalVec::new();
+        let mut palvec: OutPalVec<isize, AutoMemoryOptimizationPolicyNever> = OutPalVec::new();
         let mut vec_to_compare = vec![];
         for i in 0..3 {
             for _j in 0..1000 {
@@ -895,7 +909,7 @@ mod tests {
             palvec.push(value);
             vec_to_compare.push(value);
         }
-        let plan = palvec.compute_memory_optimizing_plan();
+        let plan = palvec.compute_memory_optimization_plan();
         assert_eq!(plan.how_many_common_to_outlier, 6);
         assert_eq!(plan.how_many_outlier_to_common, 0);
         for count_and_key in plan.counts_and_keys_common.iter().take(6) {
@@ -911,7 +925,7 @@ mod tests {
 
     #[test]
     fn memory_management_2() {
-        let mut palvec: OutPalVec<isize, MemoryManagementPolicyNever> = OutPalVec::new();
+        let mut palvec: OutPalVec<isize, AutoMemoryOptimizationPolicyNever> = OutPalVec::new();
         let mut vec_to_compare = vec![];
         for i in 0..3 {
             for _j in 0..1000 {
@@ -926,7 +940,7 @@ mod tests {
             palvec.push(value);
             vec_to_compare.push(value);
         }
-        palvec.perform_memory_management();
+        palvec.perform_memory_opimization();
         assert_eq!(palvec.outlier_palette.len(), 6);
         #[allow(clippy::needless_range_loop)]
         for i in 0..vec_to_compare.len() {
