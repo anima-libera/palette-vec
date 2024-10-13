@@ -86,6 +86,13 @@ where
             .count()
     }
 
+    pub(crate) fn total_instance_count(&self) -> usize {
+        self.vec
+            .iter()
+            .map(|palette_entry| palette_entry.count)
+            .sum()
+    }
+
     pub(crate) fn smallest_available_key(&self, key_allocator: &impl PaletteKeyAllocator<K>) -> K {
         for key_value in 0.. {
             let key = K::with_value(key_value);

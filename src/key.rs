@@ -121,4 +121,14 @@ mod tests {
         assert_eq!(Key::with_value(3).min_size(), 2);
         assert_eq!(Key::with_value(4).min_size(), 3);
     }
+
+    #[test]
+    fn keys_size_for_this_many_keys_values() {
+        assert_eq!(keys_size_for_this_many_keys(0), 0);
+        assert_eq!(keys_size_for_this_many_keys(1), 0);
+        assert_eq!(keys_size_for_this_many_keys(2), 1);
+        assert_eq!(keys_size_for_this_many_keys(3), 2);
+        assert_eq!(keys_size_for_this_many_keys(4), 2);
+        assert_eq!(keys_size_for_this_many_keys(5), 3);
+    }
 }

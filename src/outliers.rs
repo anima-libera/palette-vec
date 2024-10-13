@@ -184,12 +184,20 @@ where
         self.key_vec.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.key_vec.is_empty()
+    }
+
     pub fn outlier_instance_count(&self) -> usize {
         self.index_to_opsk_map.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.key_vec.is_empty()
+    pub fn common_palette_len(&self) -> usize {
+        self.common_palette.len()
+    }
+
+    pub fn outlier_palette_len(&self) -> usize {
+        self.outlier_palette.len()
     }
 
     /// Returns the number of instances of the given element.
@@ -265,48 +273,49 @@ where
         }
 
         // Add new element.
-        let key_of_element_to_add =
-            if self.common_palette.contains(&element) || M::NEW_ELEMENT_BE_COMMON {
-                // Already a common element, or we decided that all new elements start as common.
-                self.common_palette.add_element_instances(
-                    element,
-                    {
-                        // SAFETY: 1 is not 0.
-                        unsafe { NonZeroUsize::new_unchecked(1) }
-                    },
-                    &mut KeyAllocator {
-                        key_vec: &mut self.key_vec,
-                        reserved_key: self.outlier_key,
-                    },
-                )
-            } else {
-                // Either a new element or an already outlier element.
-                let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
-                    element,
-                    {
-                        // SAFETY: 1 is not 0.
-                        unsafe { NonZeroUsize::new_unchecked(1) }
-                    },
-                    &mut OpskAllocator,
-                );
-                let previous_entry = self.index_to_opsk_map.set(
-                    index,
-                    opsk_of_element_to_add,
-                    &mut as_index_map_access(&mut access),
-                );
-                if previous_entry.is_some() {
-                    panic!("Bug: Index map entry was supposed to be unoccupied");
-                }
-                if self.outlier_key.is_none() {
-                    let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
-                        key_vec: &mut self.key_vec,
-                        reserved_key: self.outlier_key,
-                    });
-                    self.key_vec.make_sure_a_key_fits(outlier_key);
-                    self.outlier_key = Some(outlier_key);
-                }
-                self.outlier_key.unwrap()
-            };
+        let key_of_element_to_add = if self.common_palette.contains(&element)
+            || (M::NEW_ELEMENT_BE_COMMON && !self.outlier_palette.contains(&element))
+        {
+            // Already a common element, or a new element if we decided new elements were common.
+            self.common_palette.add_element_instances(
+                element,
+                {
+                    // SAFETY: 1 is not 0.
+                    unsafe { NonZeroUsize::new_unchecked(1) }
+                },
+                &mut KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: self.outlier_key,
+                },
+            )
+        } else {
+            // Already an outlier, or a new element if we decided new elements were outliers.
+            let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
+                element,
+                {
+                    // SAFETY: 1 is not 0.
+                    unsafe { NonZeroUsize::new_unchecked(1) }
+                },
+                &mut OpskAllocator,
+            );
+            let previous_entry = self.index_to_opsk_map.set(
+                index,
+                opsk_of_element_to_add,
+                &mut as_index_map_access(&mut access),
+            );
+            if previous_entry.is_some() {
+                panic!("Bug: Index map entry was supposed to be unoccupied");
+            }
+            if self.outlier_key.is_none() {
+                let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: self.outlier_key,
+                });
+                self.key_vec.make_sure_a_key_fits(outlier_key);
+                self.outlier_key = Some(outlier_key);
+            }
+            self.outlier_key.unwrap()
+        };
 
         // SAFETY: We checked the bounds so we have `index < self.len()`,
         // and `KeyAllocator` made sure that the key fits.
@@ -322,48 +331,51 @@ where
             return;
         }
 
-        let key_of_element_to_add =
-            if self.common_palette.contains(&element) || M::NEW_ELEMENT_BE_COMMON {
-                // Already a common element, or we decided that all new elements start as common.
-                self.common_palette.add_element_instances(
-                    element,
-                    {
-                        // SAFETY: If `how_many` were zero then we would have returned earlier.
-                        unsafe { NonZeroUsize::new_unchecked(how_many) }
-                    },
-                    &mut KeyAllocator {
-                        key_vec: &mut self.key_vec,
-                        reserved_key: self.outlier_key,
-                    },
-                )
-            } else {
-                // Either a new element or an already outlier element.
-                let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
-                    element,
-                    {
-                        // SAFETY: If `how_many` were zero then we would have returned earlier.
-                        unsafe { NonZeroUsize::new_unchecked(how_many) }
-                    },
-                    &mut OpskAllocator,
-                );
+        let key_of_element_to_add = if self.common_palette.contains(&element)
+            || (M::NEW_ELEMENT_BE_COMMON && !self.outlier_palette.contains(&element))
+        {
+            // Already a common element, or a new element if we decided new elements were common.
+            self.common_palette.add_element_instances(
+                element,
+                {
+                    // SAFETY: If `how_many` were zero then we would have returned earlier.
+                    unsafe { NonZeroUsize::new_unchecked(how_many) }
+                },
+                &mut KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: self.outlier_key,
+                },
+            )
+        } else {
+            // Already an outlier, or a new element if we decided new elements were outliers.
+            let opsk_of_element_to_add = self.outlier_palette.add_element_instances(
+                element,
+                {
+                    // SAFETY: If `how_many` were zero then we would have returned earlier.
+                    unsafe { NonZeroUsize::new_unchecked(how_many) }
+                },
+                &mut OpskAllocator,
+            );
+            for i in 0..how_many {
                 let previous_entry = self.index_to_opsk_map.set(
-                    self.key_vec.len(),
+                    self.key_vec.len() + i,
                     opsk_of_element_to_add,
                     &mut IndexMapAccessOptimizer::Push,
                 );
                 if previous_entry.is_some() {
                     panic!("Bug: Index map entry was supposed to be unoccupied");
                 }
-                if self.outlier_key.is_none() {
-                    let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
-                        key_vec: &mut self.key_vec,
-                        reserved_key: self.outlier_key,
-                    });
-                    self.key_vec.make_sure_a_key_fits(outlier_key);
-                    self.outlier_key = Some(outlier_key);
-                }
-                self.outlier_key.unwrap()
-            };
+            }
+            if self.outlier_key.is_none() {
+                let outlier_key = self.common_palette.smallest_available_key(&KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: self.outlier_key,
+                });
+                self.key_vec.make_sure_a_key_fits(outlier_key);
+                self.outlier_key = Some(outlier_key);
+            }
+            self.outlier_key.unwrap()
+        };
 
         // SAFETY: `KeyAllocator` made sure that the key fits.
         unsafe { self.key_vec.push_unchecked(key_of_element_to_add, how_many) }
@@ -406,6 +418,20 @@ where
         key_vec_memory_in_bytes + index_map_memory_in_bytes
     }
 
+    pub fn used_memory_by_the_key_vec(&self) -> usize {
+        let key_vec_memory_in_bits = self.key_vec.len() * self.key_vec.keys_size();
+        let key_vec_memory_in_bytes = key_vec_memory_in_bits.div_ceil(8);
+        #[allow(clippy::let_and_return)]
+        key_vec_memory_in_bytes
+    }
+
+    pub fn used_memory_by_the_index_map(&self) -> usize {
+        let index_map_memory_in_bytes =
+            self.index_to_opsk_map.len() * self.index_to_opsk_map.entry_size();
+        #[allow(clippy::let_and_return)]
+        index_map_memory_in_bytes
+    }
+
     fn consider_this_occasion_to_maybe_perform_memory_optimization(&mut self) {
         if self
             .memory_management_policy
@@ -438,24 +464,24 @@ where
         for how_many_common_to_outlier in 0..=commons {
             for how_many_outlier_to_common in 0..=outliers {
                 let new_common_entry_count =
-                    (commons + how_many_outlier_to_common) - how_many_common_to_outlier;
+                    (commons - how_many_common_to_outlier) + how_many_outlier_to_common;
                 let new_outlier_entry_count =
-                    (outliers + how_many_common_to_outlier) - how_many_outlier_to_common;
+                    (outliers - how_many_outlier_to_common) + how_many_common_to_outlier;
                 let new_common_key_count =
                     new_common_entry_count + if 1 <= new_outlier_entry_count { 1 } else { 0 };
                 let new_keys_size_in_bits = keys_size_for_this_many_keys(new_common_key_count);
                 let new_key_vec_memory_in_bits = self.key_vec.len() * new_keys_size_in_bits;
 
-                let new_index_map_entry_count = self.index_to_opsk_map.len()
-                    + counts_and_keys_common
-                        .iter()
-                        .map(|count_and_key| count_and_key.count)
-                        .take(how_many_common_to_outlier)
-                        .sum::<usize>()
+                let new_index_map_entry_count = (self.index_to_opsk_map.len()
                     - counts_and_keys_outlier
                         .iter()
                         .map(|count_and_key| count_and_key.count)
                         .take(how_many_outlier_to_common)
+                        .sum::<usize>())
+                    + counts_and_keys_common
+                        .iter()
+                        .map(|count_and_key| count_and_key.count)
+                        .take(how_many_common_to_outlier)
                         .sum::<usize>();
                 let max_index_map_entry_size_in_bytes = IndexMap::max_entry_size(self.len());
                 let new_max_index_map_memory_in_bytes =
@@ -464,9 +490,9 @@ where
                 let new_max_memory_in_bits =
                     new_key_vec_memory_in_bits + new_max_index_map_memory_in_bytes * 8;
 
-                if best_max_memory_in_bits
-                    .is_some_and(|best_memory_in_bits| new_max_memory_in_bits < best_memory_in_bits)
-                    || best_max_memory_in_bits.is_none()
+                if best_max_memory_in_bits.is_some_and(|best_max_memory_in_bits| {
+                    new_max_memory_in_bits < best_max_memory_in_bits
+                }) || best_max_memory_in_bits.is_none()
                 {
                     best_max_memory_in_bits = Some(new_max_memory_in_bits);
                     best_c2o_and_o2c =
