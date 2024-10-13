@@ -424,10 +424,15 @@ where
 
         // Let us now consider how many elements to move from one palette to the other,
         // for both ways at the same time.
-        // For each possibility, we compute the amount of used memory that it saves,
-        // so that we can find the possibility that saves the most amount of used memory.
+        // For each possibility, we compute the amount of memory it would use,
+        // so that we can find the possibility that uses the least amount of memory.
+        //
+        // The entry size of the index map is hard to predict exactly in some cases,
+        // so we assume the biggets possible entry size given the circumstances
+        // and if it happens to end up smaller then we will have a good surprise
+        // (but at least it never happens to end up bigger than planed).
 
-        let mut best_memory_in_bits = None;
+        let mut best_max_memory_in_bits = None;
         let mut best_c2o_and_o2c = None;
         let mut best_new_keys_size_in_bits = None;
         for how_many_common_to_outlier in 0..=commons {
@@ -452,18 +457,18 @@ where
                         .map(|count_and_key| count_and_key.count)
                         .take(how_many_outlier_to_common)
                         .sum::<usize>();
-                let index_map_entry_size_in_bytes = self.index_to_opsk_map.entry_size();
-                let new_index_map_memory_in_bytes =
-                    new_index_map_entry_count * index_map_entry_size_in_bytes;
+                let max_index_map_entry_size_in_bytes = IndexMap::max_entry_size(self.len());
+                let new_max_index_map_memory_in_bytes =
+                    new_index_map_entry_count * max_index_map_entry_size_in_bytes;
 
-                let new_memory_in_bits =
-                    new_key_vec_memory_in_bits + new_index_map_memory_in_bytes * 8;
+                let new_max_memory_in_bits =
+                    new_key_vec_memory_in_bits + new_max_index_map_memory_in_bytes * 8;
 
-                if best_memory_in_bits
-                    .is_some_and(|best_memory_in_bits| new_memory_in_bits < best_memory_in_bits)
-                    || best_memory_in_bits.is_none()
+                if best_max_memory_in_bits
+                    .is_some_and(|best_memory_in_bits| new_max_memory_in_bits < best_memory_in_bits)
+                    || best_max_memory_in_bits.is_none()
                 {
-                    best_memory_in_bits = Some(new_memory_in_bits);
+                    best_max_memory_in_bits = Some(new_max_memory_in_bits);
                     best_c2o_and_o2c =
                         Some((how_many_common_to_outlier, how_many_outlier_to_common));
                     best_new_keys_size_in_bits = Some(new_keys_size_in_bits);

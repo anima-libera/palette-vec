@@ -114,6 +114,19 @@ impl IndexMap {
         number_size * 2
     }
 
+    /// The biggest size in bytes of any entry in an `IndexMap`
+    /// given the length of the `OutPalVec` that contains the index map.
+    pub(crate) fn max_entry_size(palvec_length: usize) -> usize {
+        let number_size = if palvec_length <= (u16::MAX as usize) {
+            2
+        } else if palvec_length <= (u32::MAX as usize) {
+            4
+        } else {
+            8
+        };
+        number_size * 2
+    }
+
     pub(crate) fn set(
         &mut self,
         index_in_key_vec: usize,
