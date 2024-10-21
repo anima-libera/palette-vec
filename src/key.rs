@@ -18,6 +18,9 @@ pub(crate) struct Key {
 }
 
 impl Key {
+    /// Maximum number of bits that can ever be required to represent a key value.
+    pub(crate) const MAX_SIZE: usize = usize::BITS as usize;
+
     /// Returns the minimal size (in bits) that any representation of the given key can fit in.
     pub(crate) fn min_size(self) -> usize {
         self.value.checked_ilog2().map(|size| size + 1).unwrap_or(0) as usize
@@ -92,7 +95,7 @@ impl<'a> PaletteKeyAllocator<Key> for KeyAllocator<'a> {
 
     #[inline]
     fn palette_allocate(&mut self, key: Key) {
-        self.key_vec.make_sure_a_key_fits(key);
+        self.key_vec.make_sure_a_key_fits(key)
     }
 }
 

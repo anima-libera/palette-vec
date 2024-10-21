@@ -55,6 +55,33 @@ where
     T: Clone + Eq,
     K: PaletteKeyType,
 {
+    /// Returns `false` if it is detected that an invariant is not respected,
+    /// meaning that this `Self` is not in a valid state, it is corrupted.
+    ///
+    /// Safe methods used on a valid `Self`s (if input is needed)
+    /// and that terminate without panicking
+    /// shall leave `Self` in a valid state,
+    /// if that does not happen then the method has a bug.
+    pub(crate) fn check_all_invariants(&self) -> bool {
+        for i in 0..self.vec.len() {
+            for j in (i + 1)..self.vec.len() {
+                let entry_a = &self.vec[i];
+                let entry_b = &self.vec[j];
+                if 0 < entry_a.count && 0 < entry_b.count && {
+                    // SAFETY: The entries' `count` are non zero so the elements are initialized.
+                    unsafe {
+                        entry_a.element.assume_init_ref() == entry_b.element.assume_init_ref()
+                    }
+                } {
+                    // There shall not be duplicates among the values of the used entries.
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
     /// Creates an empty palette.
     ///
     /// Does not allocate now,
@@ -274,10 +301,16 @@ where
             })
     }
 
-    pub(crate) fn counts_and_keys_sorted_by_counts(
-        &self,
-        smallest_counts_first: bool,
-    ) -> Vec<CountAndKey<K>> {
+    pub(crate) fn iter_elements(&self) -> impl Iterator<Item = &T> {
+        self.vec.iter().filter_map(|palette_entry| {
+            (0 < palette_entry.count).then_some({
+                // SAFETY: The entry's `count` is non zero so the element is initialized.
+                unsafe { palette_entry.element.assume_init_ref() }
+            })
+        })
+    }
+
+    pub(crate) fn counts_and_keys(&self, sorting: CountAndKeySorting) -> Vec<CountAndKey<K>> {
         let mut counts_and_keys: Vec<_> = self
             .vec
             .iter()
@@ -289,10 +322,16 @@ where
                 })
             })
             .collect();
-        if smallest_counts_first {
-            counts_and_keys.sort_by(|left, right| left.count.cmp(&right.count));
-        } else {
-            counts_and_keys.sort_by(|left, right| right.count.cmp(&left.count));
+        match sorting {
+            CountAndKeySorting::KeySmallestFirst => {
+                // It is already sorted that way.
+            }
+            CountAndKeySorting::CountSmallestFirst => {
+                counts_and_keys.sort_by(|left, right| left.count.cmp(&right.count));
+            }
+            CountAndKeySorting::CountBiggestFirst => {
+                counts_and_keys.sort_by(|left, right| right.count.cmp(&left.count));
+            }
         }
         counts_and_keys
     }
@@ -337,6 +376,13 @@ where
 {
     pub(crate) count: usize,
     pub(crate) key: K,
+}
+
+#[allow(clippy::enum_variant_names)]
+pub(crate) enum CountAndKeySorting {
+    KeySmallestFirst,
+    CountSmallestFirst,
+    CountBiggestFirst,
 }
 
 impl<T, K> Debug for Palette<T, K>

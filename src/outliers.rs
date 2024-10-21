@@ -7,7 +7,7 @@ use crate::{
     index_map::{IndexMap, IndexMapAccessOptimizer, IndexMapLocalAccessOptimizer},
     key::{keys_size_for_this_many_keys, Key, KeyAllocator, Opsk, OpskAllocator, PaletteKeyType},
     key_vec::KeyVec,
-    palette::{CountAndKey, Palette, PaletteEntry},
+    palette::{CountAndKey, CountAndKeySorting, Palette, PaletteEntry},
     utils::view_to_owned::ViewToOwned,
     BorrowedOrOwned,
 };
@@ -80,6 +80,10 @@ where
     /// Whenever the `OutPalVec` has an occasion to perform memory optimization operations,
     /// this method is asked if that should be done.
     fn perform_memory_optimization_on_this_occasion(&mut self) -> bool;
+
+    fn check_all_invariants(&self) -> bool {
+        true
+    }
 }
 
 /// The `OutPalVec` will never perform memory optimization operations on its own.
@@ -144,6 +148,15 @@ impl<const N: usize> AutoMemoryOptimizationPolicy
             false
         }
     }
+
+    fn check_all_invariants(&self) -> bool {
+        if N <= self.counter {
+            // The counter is not supposed to get past `N`.
+            return false;
+        }
+
+        true
+    }
 }
 
 impl<T, M> OutPalVec<T, M>
@@ -151,6 +164,174 @@ where
     T: Clone + Eq + Debug,
     M: AutoMemoryOptimizationPolicy,
 {
+    /// Returns `false` if it is detected that an invariant is not respected,
+    /// meaning that this `Self` is not in a valid state, it is corrupted.
+    ///
+    /// Safe methods used on a valid `Self`s (if input is needed)
+    /// and that terminate without panicking
+    /// shall leave `Self` in a valid state,
+    /// if that does not happen then the method has a bug.
+    pub(crate) fn check_all_invariants(&self) -> bool {
+        if !self.common_palette.check_all_invariants() {
+            return false;
+        }
+        if !self.common_palette.check_all_invariants() {
+            return false;
+        }
+        if !self.key_vec.check_all_invariants() {
+            return false;
+        }
+        if !self.index_to_opsk_map.check_all_invariants() {
+            return false;
+        }
+        if !self.memory_management_policy.check_all_invariants() {
+            return false;
+        }
+
+        {
+            // Two ways to get the OutPalVec length.
+            let according_to_key_vec = self.key_vec.len();
+            let according_to_palettes = self.common_palette.total_instance_count()
+                + self.outlier_palette.total_instance_count();
+            if according_to_key_vec != according_to_palettes {
+                return false;
+            }
+        }
+        {
+            // Three ways to get the total number of outlier instances.
+            let according_to_index_map = self.index_to_opsk_map.len();
+            let according_to_outlier_palette = self.outlier_palette.total_instance_count();
+            let according_to_key_vec = (0..self.key_vec.len())
+                .map(|index| self.key_vec.get(index).unwrap())
+                .filter(|&key| Some(key) == self.outlier_key)
+                .count();
+            if according_to_index_map != according_to_outlier_palette
+                || according_to_index_map != according_to_key_vec
+            {
+                return false;
+            }
+        }
+        {
+            // There is an outlier key iff there are outliers.
+            let there_is_an_outlier_key = self.outlier_key.is_some();
+            let there_are_outliers = 1 <= self.outlier_palette.len();
+            if there_is_an_outlier_key != there_are_outliers {
+                return false;
+            }
+        }
+
+        for common_element in self.common_palette.iter_elements() {
+            if self.outlier_palette.contains(common_element) {
+                // An element is either common or outlier, not both.
+                return false;
+            }
+        }
+
+        if let Some(outlier_key) = self.outlier_key {
+            if !self.key_vec.does_this_key_fit(outlier_key) {
+                // It does not make sense to have an outlier key
+                // that cannot fit in the key vec.
+                return false;
+            }
+        }
+
+        if let Some(highest_common_palette_key) = self.common_palette.highest_used_key() {
+            if !self.key_vec.does_this_key_fit(highest_common_palette_key) {
+                // It does not make sense to have used common palette keys
+                // that cannot fit in the key vec.
+                return false;
+            }
+        }
+
+        // Prepare the expected count of all the common keys and OPSKs.
+        // common_count_by_key[common_key] == expected remaining count of that key.
+        // outlier_count_by_key[opsk] == expected remaining count of that opsk.
+        let mut common_count_by_key = {
+            let common_counts_and_keys = self
+                .common_palette
+                .counts_and_keys(CountAndKeySorting::KeySmallestFirst);
+            let common_table_length = common_counts_and_keys
+                .iter()
+                .map(|count_and_key| count_and_key.key.value)
+                .max()
+                .map_or(0, |max_key_value| max_key_value + 1);
+            let mut common_count_by_key = vec![0; common_table_length];
+            for common_count_and_key in common_counts_and_keys {
+                common_count_by_key[common_count_and_key.key.value] = common_count_and_key.count;
+            }
+            common_count_by_key
+        };
+        let mut outlier_count_by_key = {
+            let outlier_counts_and_keys = self
+                .outlier_palette
+                .counts_and_keys(CountAndKeySorting::KeySmallestFirst);
+            let outlier_table_length = outlier_counts_and_keys
+                .iter()
+                .map(|count_and_key| count_and_key.key.value)
+                .max()
+                .map_or(0, |max_key_value| max_key_value + 1);
+            let mut outlier_count_by_key = vec![0; outlier_table_length];
+            for outlier_count_and_key in outlier_counts_and_keys {
+                outlier_count_by_key[outlier_count_and_key.key.value] = outlier_count_and_key.count;
+            }
+            outlier_count_by_key
+        };
+
+        for index in 0..self.key_vec.len() {
+            let key = self.key_vec.get(index).unwrap();
+
+            if Some(key) == self.outlier_key {
+                // Every element that is represented by the outlier key in the key vec
+                // must have a corresponding entry in the index map.
+                let Some(opsk) = self
+                    .index_to_opsk_map
+                    .get(index, &mut IndexMapAccessOptimizer::None)
+                else {
+                    return false;
+                };
+
+                // Count down its expected remaining count.
+                let Some(count) = outlier_count_by_key.get_mut(opsk.value) else {
+                    return false;
+                };
+                if *count == 0 {
+                    return false;
+                }
+                *count -= 1;
+            } else {
+                // Every element that is NOT represented by the outlier key in the key vec
+                // must NOT have a corresponding entry in the index map.
+                if self
+                    .index_to_opsk_map
+                    .get(index, &mut IndexMapAccessOptimizer::None)
+                    .is_some()
+                {
+                    return false;
+                };
+
+                // Count down its expected remaining count.
+                let Some(count) = common_count_by_key.get_mut(key.value) else {
+                    return false;
+                };
+                if *count == 0 {
+                    return false;
+                }
+                *count -= 1;
+            }
+        }
+
+        // Check the expected remaining counts,
+        // after having counted all the keys, there should not be any remaining expected count.
+        if common_count_by_key.iter().any(|&count| count != 0) {
+            return false;
+        }
+        if outlier_count_by_key.iter().any(|&count| count != 0) {
+            return false;
+        }
+
+        true
+    }
+
     pub fn new() -> Self {
         Self {
             key_vec: KeyVec::new(),
@@ -445,8 +626,12 @@ where
         let commons = self.common_palette.len();
         let outliers = self.outlier_palette.len();
 
-        let counts_and_keys_common = self.common_palette.counts_and_keys_sorted_by_counts(true);
-        let counts_and_keys_outlier = self.outlier_palette.counts_and_keys_sorted_by_counts(false);
+        let counts_and_keys_common = self
+            .common_palette
+            .counts_and_keys(CountAndKeySorting::CountSmallestFirst);
+        let counts_and_keys_outlier = self
+            .outlier_palette
+            .counts_and_keys(CountAndKeySorting::CountBiggestFirst);
 
         // Let us now consider how many elements to move from one palette to the other,
         // for both ways at the same time.
@@ -787,6 +972,7 @@ mod tests {
         let palvec: OutPalVec<()> = OutPalVec::new();
         assert!(palvec.is_empty());
         assert_eq!(palvec.len(), 0);
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -797,6 +983,7 @@ mod tests {
         assert_eq!(palvec.len(), 1);
         palvec.push((), 1);
         assert_eq!(palvec.len(), 2);
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -804,6 +991,7 @@ mod tests {
         let mut palvec: OutPalVec<i32> = OutPalVec::new();
         palvec.push(42, 1);
         assert_eq!(palvec.get(0, None), Some(&42));
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -815,12 +1003,14 @@ mod tests {
         assert!(palvec.get(0, None).is_some());
         assert!(palvec.get(1, None).is_some());
         assert!(palvec.get(2, None).is_none());
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
     fn pop_empty() {
         let mut palvec: OutPalVec<()> = OutPalVec::new();
         assert_eq!(palvec.pop().map_as_ref(), None);
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -831,6 +1021,7 @@ mod tests {
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("owo"));
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("uwu"));
         assert_eq!(palvec.pop().map_as_ref(), None);
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -841,6 +1032,7 @@ mod tests {
         assert_eq!(palvec.pop().map_copied(), Some(5));
         assert_eq!(palvec.pop().map_copied(), Some(8));
         assert_eq!(palvec.pop().map_as_ref(), None);
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -857,6 +1049,7 @@ mod tests {
         let palvec: OutPalVec<()> = OutPalVec::with_len((), 18);
         assert!(!palvec.is_empty());
         assert_eq!(palvec.len(), 18);
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -872,6 +1065,7 @@ mod tests {
         assert_eq!(palvec.get(11, None), Some(&1));
         assert_eq!(palvec.get(12, None), Some(&1));
         assert_eq!(palvec.get(13, None), Some(&2));
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -881,6 +1075,7 @@ mod tests {
         palvec.push(5, 1);
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -892,6 +1087,7 @@ mod tests {
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
         assert_eq!(palvec.len(), 2);
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -908,6 +1104,7 @@ mod tests {
         assert_eq!(palvec.get(11, access.as_mut()), Some(&1));
         assert_eq!(palvec.get(12, access.as_mut()), Some(&1));
         assert_eq!(palvec.get(13, access.as_mut()), Some(&2));
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -925,6 +1122,7 @@ mod tests {
         for i in 0..vec_to_compare.len() {
             assert_eq!(palvec.get(i, None), Some(&vec_to_compare[i]));
         }
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -956,6 +1154,7 @@ mod tests {
         for i in 0..vec_to_compare.len() {
             assert_eq!(palvec.get(i, None), Some(&vec_to_compare[i]));
         }
+        assert!(palvec.check_all_invariants());
     }
 
     #[test]
@@ -981,5 +1180,6 @@ mod tests {
         for i in 0..vec_to_compare.len() {
             assert_eq!(palvec.get(i, None), Some(&vec_to_compare[i]));
         }
+        assert!(palvec.check_all_invariants());
     }
 }

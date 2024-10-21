@@ -78,6 +78,21 @@ enum IndexMapEnum {
 }
 
 impl IndexMap {
+    /// Returns `false` if it is detected that an invariant is not respected,
+    /// meaning that this `Self` is not in a valid state, it is corrupted.
+    ///
+    /// Safe methods used on a valid `Self`s (if input is needed)
+    /// and that terminate without panicking
+    /// shall leave `Self` in a valid state,
+    /// if that does not happen then the method has a bug.
+    pub(crate) fn check_all_invariants(&self) -> bool {
+        match &self.inner {
+            IndexMapEnum::U16(map_sized_u16) => map_sized_u16.check_all_invariants(),
+            IndexMapEnum::U32(map_sized_u32) => map_sized_u32.check_all_invariants(),
+            IndexMapEnum::U64(map_sized_u64) => map_sized_u64.check_all_invariants(),
+        }
+    }
+
     pub(crate) fn new() -> IndexMap {
         IndexMap {
             inner: IndexMapEnum::U16(IndexMapSized::new()),
@@ -410,6 +425,15 @@ impl<N> IndexMapSized<N>
 where
     N: NumberType,
 {
+    fn check_all_invariants(&self) -> bool {
+        if !self.vec.is_sorted_by_key(|entry| entry.index_in_key_vec) {
+            // The vec shall be sorted by `index_in_key_vec`.
+            return false;
+        }
+
+        true
+    }
+
     fn new() -> IndexMapSized<N> {
         IndexMapSized { vec: vec![] }
     }
@@ -766,6 +790,7 @@ mod tests {
     fn access_empty_returns_none() {
         let index_map = IndexMap::new();
         assert_eq!(index_map.get(0, &mut A::None), None);
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -786,6 +811,7 @@ mod tests {
         assert_eq!(index_map.get(4, &mut A::None), None);
         assert_eq!(index_map.get(69, &mut A::None), None);
         assert_eq!(index_map.get(71, &mut A::None), None);
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -805,6 +831,7 @@ mod tests {
         assert_eq!(index_map.get(1, &mut A::None), None);
         assert_eq!(index_map.get(u16::MAX as usize - 1, &mut A::None), None);
         assert!(matches!(index_map.inner, IndexMapEnum::U16(_)));
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -852,6 +879,8 @@ mod tests {
             index_map.get(u32::MAX as usize + 1, &mut A::None),
             Some(Opsk::with_value(3))
         );
+
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -866,6 +895,7 @@ mod tests {
             index_map.get(u64::MAX as usize, &mut A::None),
             Some(Opsk::with_value(u64::MAX as usize))
         );
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -894,6 +924,7 @@ mod tests {
             index_map.get(10000, &mut A::None),
             Some(Opsk::with_value(20000))
         );
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -916,6 +947,7 @@ mod tests {
         assert_eq!(index_map.get(5, &mut A::None), None);
         assert_eq!(index_map.get(6, &mut A::None), Some(Opsk::with_value(0)));
         assert_eq!(index_map.get(7, &mut A::None), None);
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -960,6 +992,7 @@ mod tests {
             index_map.get(10000, &mut A::None),
             Some(Opsk::with_value(10000))
         );
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -980,6 +1013,7 @@ mod tests {
         add_many_entries.add_entry(7, Opsk::with_value(u32::MAX as usize));
         add_many_entries.add_entry(2, Opsk::with_value(2));
         add_many_entries.finish();
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -999,6 +1033,7 @@ mod tests {
         add_many_entries.add_entry(7, Opsk::with_value(u32::MAX as usize));
         // We are still missing one.
         add_many_entries.finish();
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -1020,6 +1055,7 @@ mod tests {
         // One too many.
         add_many_entries.add_entry(1, Opsk::with_value(1));
         add_many_entries.finish();
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
@@ -1042,6 +1078,7 @@ mod tests {
         assert_eq!(index_map.get(4, &mut access), None);
         assert_eq!(index_map.get(69, &mut access), None);
         assert_eq!(index_map.get(71, &mut access), None);
+        assert!(index_map.check_all_invariants());
     }
 
     #[test]
