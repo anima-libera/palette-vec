@@ -45,32 +45,54 @@ impl Drop for KeyVec {
     }
 }
 
+pub(crate) enum BrokenInvariantInKeyVec {
+    /// The KeyVec's `keys_size` is bigger than `Key::MAX_SIZE`.
+    ///
+    /// Key values passed around and manipulated outside of the KeyVec's bit-packed array of keys
+    /// are all represented with the `Key` type. It does not make sense for the KeyVec to pretend
+    /// to be able to hold key values that can't even fit in a `Key`.
+    KeysSizeBiggerThanMaxPossibleSize { keys_size: usize },
+    /// The KeyVec's length (in bits) of its bit array is not a multiple of `keys_size`.
+    ///
+    /// The KeyVec's bit array is just a way to represent an array of bit-packed values that all
+    /// have a size of `keys_size` in bits. Let `N` be the number of keys in the KeyVec,
+    /// then there are `N * keys_size` bits in the bit array to represent these `N` keys.
+    /// It does not make sense to have a number of bits that is not a multiple of `keys_size`.
+    BitArrayLengthNotAMultipleOfKeysSize {
+        length_in_bits: usize,
+        keys_size: usize,
+    },
+}
+
 impl KeyVec {
-    /// Returns `false` if it is detected that an invariant is not respected,
+    /// Returns `Err` if it is detected that an invariant is not respected,
     /// meaning that this `Self` is not in a valid state, it is corrupted.
     ///
     /// Safe methods used on a valid `Self`s (if input is needed)
     /// and that terminate without panicking
     /// shall leave `Self` in a valid state,
     /// if that does not happen then the method has a bug.
-    pub(crate) fn check_all_invariants(&self) -> bool {
+    pub(crate) fn check_all_invariants(&self) -> Result<(), BrokenInvariantInKeyVec> {
         if Key::MAX_SIZE < self.keys_size {
-            // It does not make sense to pretend to store key representations
-            // that are bigger than `Key::MAX_SIZE`.
-            return false;
+            return Err(BrokenInvariantInKeyVec::KeysSizeBiggerThanMaxPossibleSize {
+                keys_size: self.keys_size,
+            });
         }
 
         if 0 < self.keys_size {
             // SAFETY: `keys_size` is not zero so `vec` is active.
-            let len_in_bits = unsafe { self.vec_or_len.vec.len() };
-            if len_in_bits % self.keys_size != 0 {
-                // The number of bits shall be a multiple of `keys_size`
-                // or else the remaining bits do not form a whole key and it does not make sense.
-                return false;
+            let length_in_bits = unsafe { self.vec_or_len.vec.len() };
+            if length_in_bits % self.keys_size != 0 {
+                return Err(
+                    BrokenInvariantInKeyVec::BitArrayLengthNotAMultipleOfKeysSize {
+                        length_in_bits,
+                        keys_size: self.keys_size,
+                    },
+                );
             }
         }
 
-        true
+        Ok(())
     }
 
     /// Creates an empty `KeyVec` (with `keys_size` initially set to zero).
@@ -543,7 +565,7 @@ mod tests {
         assert_is_len(&key_vec, 3);
         key_vec._push(Key::with_value(0), 1);
         assert_is_len(&key_vec, 4);
-        assert!(key_vec.check_all_invariants());
+        assert!(key_vec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -560,7 +582,7 @@ mod tests {
         assert_is_vec(&key_vec, 3);
         key_vec._push(Key::with_value(0), 1);
         assert_is_vec(&key_vec, 4);
-        assert!(key_vec.check_all_invariants());
+        assert!(key_vec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -578,7 +600,7 @@ mod tests {
             key_vec.change_keys_size(key_size);
             key_vec._push(mak_key_for_given_size, 1);
         }
-        assert!(key_vec.check_all_invariants());
+        assert!(key_vec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -592,7 +614,7 @@ mod tests {
     fn can_set_key_size_to_max() {
         let mut key_vec = KeyVec::new();
         key_vec.change_keys_size(Key::MAX_SIZE);
-        assert!(key_vec.check_all_invariants());
+        assert!(key_vec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -609,7 +631,7 @@ mod tests {
         for i in 1000..2000 {
             assert_eq!(key_vec.get(i), Some(Key::with_value(1)));
         }
-        assert!(key_vec.check_all_invariants());
+        assert!(key_vec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -621,6 +643,6 @@ mod tests {
         key_vec._push(Key::with_value(1), 0);
         assert_eq!(key_vec.len(), 0);
         assert_eq!(key_vec.get(0), None);
-        assert!(key_vec.check_all_invariants());
+        assert!(key_vec.check_all_invariants().is_ok());
     }
 }

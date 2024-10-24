@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::ops::Index;
 
-use crate::key::{Key, KeyAllocator};
-use crate::key_vec::KeyVec;
-use crate::palette::{CountAndKeySorting, Palette};
+use crate::key::{Key, KeyAllocator, PaletteKeyType};
+use crate::key_vec::{BrokenInvariantInKeyVec, KeyVec};
+use crate::palette::{BrokenInvariantInPalette, CountAndKeySorting, Palette};
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
 // TODO: Better doc!
@@ -26,45 +26,82 @@ where
     _phantom: PhantomData<T>,
 }
 
+pub(crate) enum BrokenInvariantInPalVec {
+    BrokenKeyVec(BrokenInvariantInKeyVec),
+    BrokenPalette(BrokenInvariantInPalette<Key>),
+    /// The palette uses at least one key that cannot fit in the key vec.
+    ///
+    /// It does not makse sense,
+    /// the palette uses a key only if this key has instances in the key vec
+    /// so the key vec must be able to contain every key value that the palette uses.
+    PaletteUsesKeysThatCannotFitInKeyVec {
+        key: Key,
+        key_vec_keys_size: usize,
+    },
+    /// - The key vec length (in keys) is the length of the PalVec.
+    /// - The sum of instance counts of palette entries is also the length of the PalVec.
+    ///
+    /// It does not make sense for these two quantities to not be equal.
+    KeyVecAndPaletteDisagreeOnLength {
+        length_according_to_key_vec: usize,
+        length_according_to_palette: usize,
+    },
+    /// There is a key that has a actual number of instances in the key vec
+    /// that is different from the instance count of that key according to the palette.
+    ///
+    /// The palette must know how many instances of its keys there are in the key vec.
+    KeyVecAndPaletteDisagreeOnAnInstanceCount {
+        key: Key,
+        instance_count_according_to_key_vec: usize,
+        instance_count_according_to_palette: usize,
+    },
+}
+
 impl<T> PalVec<T>
 where
     T: Clone + Eq,
 {
-    /// Returns `false` if it is detected that an invariant is not respected,
+    /// Returns `Err` if it is detected that an invariant is not respected,
     /// meaning that this `Self` is not in a valid state, it is corrupted.
     ///
     /// Safe methods used on a valid `Self`s (if input is needed)
     /// and that terminate without panicking
     /// shall leave `Self` in a valid state,
     /// if that does not happen then the method has a bug.
-    pub(crate) fn check_all_invariants(&self) -> bool {
-        if !self.palette.check_all_invariants() {
-            return false;
+    pub(crate) fn check_all_invariants(&self) -> Result<(), BrokenInvariantInPalVec> {
+        if let Err(err) = self.key_vec.check_all_invariants() {
+            return Err(BrokenInvariantInPalVec::BrokenKeyVec(err));
         }
-        if !self.key_vec.check_all_invariants() {
-            return false;
+        if let Err(err) = self.palette.check_all_invariants() {
+            return Err(BrokenInvariantInPalVec::BrokenPalette(err));
         }
 
+        // Check that the keys used by the palette can fit in the key vec.
+        if let Some(highest_key) = self.palette.highest_used_key() {
+            if !self.key_vec.does_this_key_fit(highest_key) {
+                return Err(
+                    BrokenInvariantInPalVec::PaletteUsesKeysThatCannotFitInKeyVec {
+                        key: highest_key,
+                        key_vec_keys_size: self.key_vec.keys_size(),
+                    },
+                );
+            }
+        }
+
+        // Check that the key vec and the palette both agree on the PalVec's length.
         {
-            // Two ways to get the PalVec length.
             let according_to_key_vec = self.key_vec.len();
             let according_to_palette = self.palette.total_instance_count();
             if according_to_key_vec != according_to_palette {
-                return false;
+                return Err(BrokenInvariantInPalVec::KeyVecAndPaletteDisagreeOnLength {
+                    length_according_to_key_vec: according_to_key_vec,
+                    length_according_to_palette: according_to_palette,
+                });
             }
         }
 
-        if let Some(highest_key) = self.palette.highest_used_key() {
-            if !self.key_vec.does_this_key_fit(highest_key) {
-                // It does not make sense to have used keys
-                // that cannot fit in the key vec.
-                return false;
-            }
-        }
-
-        // Prepare the expected count of all the keys.
-        // count_by_key[key] == expected remaining count of that key.
-        let mut count_by_key = {
+        // Get the number of instances of every key, according to the palette.
+        let count_by_key_according_to_palette = {
             let counts_and_keys = self
                 .palette
                 .counts_and_keys(CountAndKeySorting::KeySmallestFirst);
@@ -80,26 +117,37 @@ where
             count_by_key
         };
 
-        for index in 0..self.key_vec.len() {
-            let key = self.key_vec.get(index).unwrap();
-
-            // Count down its expected remaining count.
-            let Some(count) = count_by_key.get_mut(key.value) else {
-                return false;
-            };
-            if *count == 0 {
-                return false;
+        // Count the number of instances of every key, according to the key vec.
+        let count_by_key_according_to_key_vec = {
+            let mut count_by_key =
+                vec![0; Key::max_that_fits_in_size(self.key_vec.keys_size()).value + 1];
+            for index in 0..self.key_vec.len() {
+                let key = self.key_vec.get(index).unwrap();
+                count_by_key[key.value] += 1;
             }
-            *count -= 1;
+            count_by_key
+        };
+
+        // For every key, check that the palette and the key vec agree on its instance count.
+        #[allow(clippy::needless_range_loop)]
+        for key_value in 0..count_by_key_according_to_key_vec.len() {
+            let instance_count_according_to_key_vec = count_by_key_according_to_key_vec[key_value];
+            let instance_count_according_to_palette = count_by_key_according_to_palette
+                .get(key_value)
+                .copied()
+                .unwrap_or(0);
+            if instance_count_according_to_key_vec != instance_count_according_to_palette {
+                return Err(
+                    BrokenInvariantInPalVec::KeyVecAndPaletteDisagreeOnAnInstanceCount {
+                        key: Key::with_value(key_value),
+                        instance_count_according_to_key_vec,
+                        instance_count_according_to_palette,
+                    },
+                );
+            }
         }
 
-        // Check the expected remaining counts,
-        // after having counted all the keys, there should not be any remaining expected count.
-        if count_by_key.iter().any(|&count| count != 0) {
-            return false;
-        }
-
-        true
+        Ok(())
     }
 
     /// Creates an empty `PalVec`.
@@ -316,7 +364,7 @@ mod tests {
         let palvec: PalVec<()> = PalVec::new();
         assert!(palvec.is_empty());
         assert_eq!(palvec.len(), 0);
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -327,7 +375,7 @@ mod tests {
         assert_eq!(palvec.len(), 1);
         palvec.push((), 1);
         assert_eq!(palvec.len(), 2);
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -335,7 +383,7 @@ mod tests {
         let mut palvec: PalVec<i32> = PalVec::new();
         palvec.push(42, 1);
         assert_eq!(palvec.get(0), Some(&42));
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -347,14 +395,14 @@ mod tests {
         assert!(palvec.get(0).is_some());
         assert!(palvec.get(1).is_some());
         assert!(palvec.get(2).is_none());
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
     fn pop_empty() {
         let mut palvec: PalVec<()> = PalVec::new();
         assert_eq!(palvec.pop().map_as_ref(), None);
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -365,7 +413,7 @@ mod tests {
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("owo"));
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("uwu"));
         assert_eq!(palvec.pop().map_as_ref(), None);
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -376,7 +424,7 @@ mod tests {
         assert_eq!(palvec.pop().map_copied(), Some(5));
         assert_eq!(palvec.pop().map_copied(), Some(8));
         assert_eq!(palvec.pop().map_as_ref(), None);
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -388,7 +436,7 @@ mod tests {
         palvec.set(1, 1);
         assert_eq!(palvec.get(0), Some(&0));
         assert_eq!(palvec.get(1), Some(&1));
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -433,7 +481,7 @@ mod tests {
         palvec.push(5, 1);
         assert!(palvec.palette.contains(&8));
         assert!(palvec.palette.contains(&5));
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -445,7 +493,7 @@ mod tests {
         palvec.pop();
         assert!(!palvec.palette.contains(&8));
         assert!(!palvec.palette.contains(&5));
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -460,7 +508,7 @@ mod tests {
             assert_eq!(palvec.pop().map_copied(), Some(i));
             assert!(!palvec.palette.contains(&i));
         }
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -477,7 +525,7 @@ mod tests {
                 assert!(!palvec.palette.contains(&j));
             }
         }
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -487,7 +535,7 @@ mod tests {
         palvec.push(5, 1);
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 
     #[test]
@@ -499,6 +547,6 @@ mod tests {
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
         assert_eq!(palvec.len(), 2);
-        assert!(palvec.check_all_invariants());
+        assert!(palvec.check_all_invariants().is_ok());
     }
 }

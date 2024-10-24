@@ -50,36 +50,51 @@ where
     _phantom: PhantomData<K>,
 }
 
+pub(crate) enum BrokenInvariantInPalette<K>
+where
+    K: PaletteKeyType,
+{
+    /// There are two different keys that are associated to the same element value.
+    ///
+    /// There must be one and only one key value associated to each element in the palette.
+    TwoKeysHaveSameElement { keys: (K, K) },
+}
+
 impl<T, K> Palette<T, K>
 where
     T: Clone + Eq,
     K: PaletteKeyType,
 {
-    /// Returns `false` if it is detected that an invariant is not respected,
+    /// Returns `Err` if it is detected that an invariant is not respected,
     /// meaning that this `Self` is not in a valid state, it is corrupted.
     ///
     /// Safe methods used on a valid `Self`s (if input is needed)
     /// and that terminate without panicking
     /// shall leave `Self` in a valid state,
     /// if that does not happen then the method has a bug.
-    pub(crate) fn check_all_invariants(&self) -> bool {
-        for i in 0..self.vec.len() {
-            for j in (i + 1)..self.vec.len() {
-                let entry_a = &self.vec[i];
-                let entry_b = &self.vec[j];
-                if 0 < entry_a.count && 0 < entry_b.count && {
+    pub(crate) fn check_all_invariants(&self) -> Result<(), BrokenInvariantInPalette<K>> {
+        for index_a in 0..self.vec.len() {
+            for index_b in (index_a + 1)..self.vec.len() {
+                let entry_a = &self.vec[index_a];
+                let entry_b = &self.vec[index_b];
+                if 0 < entry_a.count && 0 < entry_b.count {
                     // SAFETY: The entries' `count` are non zero so the elements are initialized.
-                    unsafe {
-                        entry_a.element.assume_init_ref() == entry_b.element.assume_init_ref()
+                    let (element_a, element_b) = unsafe {
+                        (
+                            entry_a.element.assume_init_ref(),
+                            entry_b.element.assume_init_ref(),
+                        )
+                    };
+                    if element_a == element_b {
+                        return Err(BrokenInvariantInPalette::TwoKeysHaveSameElement {
+                            keys: (K::with_value(index_a), K::with_value(index_b)),
+                        });
                     }
-                } {
-                    // There shall not be duplicates among the values of the used entries.
-                    return false;
                 }
             }
         }
 
-        true
+        Ok(())
     }
 
     /// Creates an empty palette.
@@ -143,6 +158,48 @@ where
         allocated_key
     }
 
+    fn get_palette_entry_and_key_value(
+        &self,
+        element: &impl ViewToOwned<T>,
+    ) -> Option<(usize, &PaletteEntry<T>)> {
+        self.vec
+            .iter()
+            .enumerate()
+            .find(|(_key_value, palette_entry)| {
+                if 0 < palette_entry.count {
+                    let entry_element = {
+                        // SAFETY: The entry's `count` is non zero
+                        // so the element is initialized.
+                        unsafe { palette_entry.element.assume_init_ref() }
+                    };
+                    element.eq(entry_element)
+                } else {
+                    false
+                }
+            })
+    }
+
+    fn get_mut_palette_entry_and_key_value(
+        &mut self,
+        element: &impl ViewToOwned<T>,
+    ) -> Option<(usize, &mut PaletteEntry<T>)> {
+        self.vec
+            .iter_mut()
+            .enumerate()
+            .find(|(_key_value, palette_entry)| {
+                if 0 < palette_entry.count {
+                    let entry_element = {
+                        // SAFETY: The entry's `count` is non zero
+                        // so the element is initialized.
+                        unsafe { palette_entry.element.assume_init_ref() }
+                    };
+                    element.eq(entry_element)
+                } else {
+                    false
+                }
+            })
+    }
+
     /// Tells the palette that `that_many` new `element` instances
     /// will be added to the `PalVec`'s array,
     /// and the palette must update its map and counts and all and return the key to `element`,
@@ -161,22 +218,7 @@ where
         that_many: NonZeroUsize,
         key_allocator: &mut impl PaletteKeyAllocator<K>,
     ) -> K {
-        let already_in_palette =
-            self.vec
-                .iter_mut()
-                .enumerate()
-                .find(|(_key_value, palette_entry)| {
-                    if 0 < palette_entry.count {
-                        let entry_element = {
-                            // SAFETY: The entry's `count` is non zero
-                            // so the element is initialized.
-                            unsafe { palette_entry.element.assume_init_ref() }
-                        };
-                        element.eq(entry_element)
-                    } else {
-                        false
-                    }
-                });
+        let already_in_palette = self.get_mut_palette_entry_and_key_value(&element);
         if let Some((key_value, palette_entry)) = already_in_palette {
             palette_entry.count = palette_entry
                 .count
@@ -267,28 +309,30 @@ where
     ///
     /// This operation is *O*(*len*).
     pub(crate) fn number_of_instances(&self, element: &impl ViewToOwned<T>) -> usize {
-        self.vec
-            .iter()
-            .find_map(|palette_entry| {
-                (0 < palette_entry.count)
-                    .then(|| {
-                        let entry_element = {
-                            // SAFETY: The entry's `count` is non zero
-                            // so the element is initialized.
-                            unsafe { palette_entry.element.assume_init_ref() }
-                        };
-                        (element.eq(entry_element)).then_some(palette_entry.count)
-                    })
-                    .flatten()
+        self.get_palette_entry_and_key_value(element)
+            .map(|(_key_value, palette_entry)| {
+                debug_assert!(0 < palette_entry.count);
+                palette_entry.count
             })
             .unwrap_or(0)
+    }
+
+    /// Returns the key associated with the given element.
+    ///
+    /// This operation is *O*(*len*).
+    pub(crate) fn key_of_element(&self, element: &impl ViewToOwned<T>) -> Option<K> {
+        self.get_palette_entry_and_key_value(element)
+            .map(|(key_value, palette_entry)| {
+                debug_assert!(0 < palette_entry.count);
+                K::with_value(key_value)
+            })
     }
 
     /// Returns `true` if the palette contains the given element.
     ///
     /// This operation is *O*(*len*).
     pub(crate) fn contains(&self, element: &impl ViewToOwned<T>) -> bool {
-        self.number_of_instances(element) != 0
+        self.get_palette_entry_and_key_value(element).is_some()
     }
 
     /// Returns an iterator over the keys currently used by the palette.
@@ -308,6 +352,20 @@ where
                 unsafe { palette_entry.element.assume_init_ref() }
             })
         })
+    }
+
+    pub(crate) fn iter_elements_and_keys(&self) -> impl Iterator<Item = (K, &T)> {
+        self.vec
+            .iter()
+            .enumerate()
+            .filter_map(|(key_value, palette_entry)| {
+                (0 < palette_entry.count).then_some({
+                    // SAFETY: The entry's `count` is non zero so the element is initialized.
+                    let element = unsafe { palette_entry.element.assume_init_ref() };
+                    let key = K::with_value(key_value);
+                    (key, element)
+                })
+            })
     }
 
     pub(crate) fn counts_and_keys(&self, sorting: CountAndKeySorting) -> Vec<CountAndKey<K>> {

@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, ops::Not};
 
 use crate::key_vec::KeyVec;
 
@@ -24,6 +24,13 @@ impl Key {
     /// Returns the minimal size (in bits) that any representation of the given key can fit in.
     pub(crate) fn min_size(self) -> usize {
         self.value.checked_ilog2().map(|size| size + 1).unwrap_or(0) as usize
+    }
+
+    /// Returns the higest key value that can fit in the given key size (in bits).
+    pub(crate) fn max_that_fits_in_size(keys_size: usize) -> Key {
+        Key {
+            value: (usize::MAX << keys_size).not(),
+        }
     }
 }
 
@@ -133,5 +140,14 @@ mod tests {
         assert_eq!(keys_size_for_this_many_keys(3), 2);
         assert_eq!(keys_size_for_this_many_keys(4), 2);
         assert_eq!(keys_size_for_this_many_keys(5), 3);
+    }
+
+    #[test]
+    fn key_max_values_given_size() {
+        assert_eq!(Key::max_that_fits_in_size(0).value, 0);
+        assert_eq!(Key::max_that_fits_in_size(1).value, 1);
+        assert_eq!(Key::max_that_fits_in_size(2).value, 0b11);
+        assert_eq!(Key::max_that_fits_in_size(3).value, 0b111);
+        assert_eq!(Key::max_that_fits_in_size(4).value, 0b1111);
     }
 }
