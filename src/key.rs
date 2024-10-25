@@ -29,7 +29,7 @@ impl Key {
     /// Returns the higest key value that can fit in the given key size (in bits).
     pub(crate) fn max_that_fits_in_size(keys_size: usize) -> Key {
         Key {
-            value: (usize::MAX << keys_size).not(),
+            value: (usize::MAX.checked_shl(keys_size as u32).unwrap_or(0)).not(),
         }
     }
 }
@@ -79,6 +79,8 @@ impl PaletteKeyType for Opsk {
 
 /// When a palette allocates a new key, a part of the allocation work cannot be done by the palette
 /// and is done instead by a type that implements this trait.
+///
+/// This does key-type-specific work.
 pub(crate) trait PaletteKeyAllocator<K> {
     fn can_allocate(&self, key: K) -> bool;
     fn palette_allocate(&mut self, key: K);
@@ -87,7 +89,6 @@ pub(crate) trait PaletteKeyAllocator<K> {
 /// Used when allocating a `Key`.
 ///
 /// Makes sure the `KeyVec` can contain the allocated key.
-///
 /// Also disallow the allocation of a reserved key, used as the outlier key by the `OutPalVec`.
 pub(crate) struct KeyAllocator<'a> {
     pub(crate) key_vec: &'a mut KeyVec,
@@ -125,29 +126,87 @@ mod tests {
 
     #[test]
     fn key_min_size_values() {
-        assert_eq!(Key::with_value(0).min_size(), 0);
-        assert_eq!(Key::with_value(1).min_size(), 1);
-        assert_eq!(Key::with_value(2).min_size(), 2);
-        assert_eq!(Key::with_value(3).min_size(), 2);
-        assert_eq!(Key::with_value(4).min_size(), 3);
-    }
+        fn min_size(key_value: usize) -> usize {
+            Key::with_value(key_value).min_size()
+        }
 
-    #[test]
-    fn keys_size_for_this_many_keys_values() {
-        assert_eq!(keys_size_for_this_many_keys(0), 0);
-        assert_eq!(keys_size_for_this_many_keys(1), 0);
-        assert_eq!(keys_size_for_this_many_keys(2), 1);
-        assert_eq!(keys_size_for_this_many_keys(3), 2);
-        assert_eq!(keys_size_for_this_many_keys(4), 2);
-        assert_eq!(keys_size_for_this_many_keys(5), 3);
+        assert_eq!(min_size(0), 0);
+        assert_eq!(min_size(1), 1);
+
+        // for i in range(2, 64+1):
+        //  print(f"assert_eq!(min_size({2**(i-1)}), {i}); assert_eq!(min_size({(2**i)-1}), {i});")
+        assert_eq!(min_size(2), 2);
+        assert_eq!(min_size(3), 2);
+        assert_eq!(min_size(4), 3);
+        assert_eq!(min_size(7), 3);
+        assert_eq!(min_size(8), 4);
+        assert_eq!(min_size(15), 4);
+        assert_eq!(min_size(16), 5);
+        assert_eq!(min_size(31), 5);
+        assert_eq!(min_size(32), 6);
+        assert_eq!(min_size(63), 6);
+        assert_eq!(min_size(64), 7);
+        assert_eq!(min_size(127), 7);
+        // ...
+        assert_eq!(min_size(2305843009213693952), 62);
+        assert_eq!(min_size(4611686018427387903), 62);
+        assert_eq!(min_size(4611686018427387904), 63);
+        assert_eq!(min_size(9223372036854775807), 63);
+        assert_eq!(min_size(9223372036854775808), 64);
+        assert_eq!(min_size(18446744073709551615), 64);
     }
 
     #[test]
     fn key_max_values_given_size() {
         assert_eq!(Key::max_that_fits_in_size(0).value, 0);
-        assert_eq!(Key::max_that_fits_in_size(1).value, 1);
+        assert_eq!(Key::max_that_fits_in_size(1).value, 0b1);
         assert_eq!(Key::max_that_fits_in_size(2).value, 0b11);
         assert_eq!(Key::max_that_fits_in_size(3).value, 0b111);
         assert_eq!(Key::max_that_fits_in_size(4).value, 0b1111);
+        assert_eq!(Key::max_that_fits_in_size(5).value, 0b11111);
+        assert_eq!(Key::max_that_fits_in_size(6).value, 0b111111);
+        assert_eq!(Key::max_that_fits_in_size(7).value, 0b1111111);
+        // ...
+        assert_eq!(Key::max_that_fits_in_size(61).value, usize::MAX >> 3);
+        assert_eq!(Key::max_that_fits_in_size(62).value, usize::MAX >> 2);
+        assert_eq!(Key::max_that_fits_in_size(63).value, usize::MAX >> 1);
+        assert_eq!(Key::max_that_fits_in_size(64).value, usize::MAX);
+    }
+
+    #[test]
+    fn keys_size_for_this_many_keys_values() {
+        fn size_for(this_many_keys: usize) -> usize {
+            keys_size_for_this_many_keys(this_many_keys)
+        }
+
+        assert_eq!(size_for(0), 0);
+        assert_eq!(size_for(1), 0);
+        assert_eq!(size_for(2), 1);
+
+        // for i in range(2, 64+1-1):
+        //  print(f"assert_eq!(size_for({2**(i-1)+1}), {i}); assert_eq!(size_for({2**i}), {i});")
+        assert_eq!(size_for(3), 2);
+        assert_eq!(size_for(4), 2);
+        assert_eq!(size_for(5), 3);
+        assert_eq!(size_for(8), 3);
+        assert_eq!(size_for(9), 4);
+        assert_eq!(size_for(16), 4);
+        assert_eq!(size_for(17), 5);
+        assert_eq!(size_for(32), 5);
+        assert_eq!(size_for(33), 6);
+        assert_eq!(size_for(64), 6);
+        assert_eq!(size_for(65), 7);
+        assert_eq!(size_for(128), 7);
+        // ...
+        assert_eq!(size_for(1152921504606846977), 61);
+        assert_eq!(size_for(2305843009213693952), 61);
+        assert_eq!(size_for(2305843009213693953), 62);
+        assert_eq!(size_for(4611686018427387904), 62);
+        assert_eq!(size_for(4611686018427387905), 63);
+        assert_eq!(size_for(9223372036854775808), 63);
+
+        // Beware not to use a literal that would equal `usize::MAX + 1` if it could.
+        assert_eq!(size_for(9223372036854775809), 64);
+        assert_eq!(size_for(18446744073709551615), 64);
     }
 }
