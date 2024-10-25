@@ -58,8 +58,11 @@ pub(crate) fn keys_size_for_this_many_keys(how_many: usize) -> usize {
 
 /// OPSK means Outlier Palette Side Key,
 /// it represents a key of an outlier element.
+///
 /// Such keys are not present in the `KeyVec`, but they are present in the index map
 /// to access the right outlier element in the outlier palette given the index.
+/// Hence the name (these are keys that are only used on the side of the outlier palette,
+/// the `KeyVec` and common palette never see such keys).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Opsk {
     pub(crate) value: usize,
@@ -208,5 +211,27 @@ mod tests {
         // Beware not to use a literal that would equal `usize::MAX + 1` if it could.
         assert_eq!(size_for(9223372036854775809), 64);
         assert_eq!(size_for(18446744073709551615), 64);
+    }
+
+    #[test]
+    fn key_allocator() {
+        let some_key = Key::with_value(9);
+
+        let mut key_vec = KeyVec::new();
+        assert!(!key_vec.does_this_key_fit(some_key));
+
+        let mut key_allocator = KeyAllocator {
+            key_vec: &mut key_vec,
+            reserved_key: Some(Key::with_value(6)),
+        };
+
+        assert!(key_allocator.can_allocate(Key::with_value(0)));
+        assert!(key_allocator.can_allocate(Key::with_value(1)));
+        assert!(key_allocator.can_allocate(Key::with_value(5)));
+        assert!(!key_allocator.can_allocate(Key::with_value(6)));
+        assert!(key_allocator.can_allocate(Key::with_value(7)));
+
+        key_allocator.palette_allocate(some_key);
+        assert!(key_vec.does_this_key_fit(some_key));
     }
 }
