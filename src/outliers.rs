@@ -1,5 +1,5 @@
 //! `OutPalVec` is like `PalVec` but with an optimization that reduces pressure on keys size
-//! in exchange for worse performances in some cases.
+//! in exchange for some performance cost at times.
 
 use std::{fmt::Debug, num::NonZeroUsize, ops::Index};
 
@@ -14,7 +14,9 @@ use crate::{
     BorrowedOrOwned,
 };
 
-// TODO: Better doc!
+/// Like `PalVec` but with an optimization that allows better compression with little compromise.
+///
+/// TODO: Explain the good stuff!
 #[derive(Clone)]
 pub struct OutPalVec<T, M = AutoMemoryOptimizationPolicyNever>
 where

@@ -1,3 +1,20 @@
+//! Key types. A key is an index in a palette (most of the time).
+//!
+//! The use of keys by `PalVec` is a lot simpler than by `OutPalVec`.
+//!
+//! Here is an overview of what uses which kind of keys:
+//! - `PalVec` only deal with `Key`s.
+//! - `OutPalVec` deals with both `Key`s and `Opsk`s because it has two different palettes
+//!   which have very different roles and their keys shall not be mixed or confused together.
+//! - `KeyVec` is a bit-packed array of `Key`s, not quite a `Vec<Key>` but it acts like it
+//!   (as far as needed by the scope of this crate) and its API takes and returns `Key`s.
+//! - `IndexMap` is a memory-tight map of indices to `Opsk`s, not quite a `HashMap<usize, Opsk>`
+//!   but it acts like it (as far as needed by the scope of this crate)
+//!   and its API takes and returns `Opsk`s.
+//! - `Palette<K>` is generic over its key type, `K` can be `Key` or `Opsk`, but then it
+//!   only deals with `K` and never with the other key type, its API takes and returns `K`s.
+//!   It is as such to allow `OutPalVec` to have its two palettes that do not mix their key types.
+
 use std::{fmt::Debug, ops::Not};
 
 use crate::key_vec::KeyVec;

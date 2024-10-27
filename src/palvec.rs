@@ -7,7 +7,61 @@ use crate::key_vec::{BrokenInvariantInKeyVec, KeyVec};
 use crate::palette::{BrokenInvariantInPalette, CountAndKeySorting, Palette};
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
-// TODO: Better doc!
+/// A collection similar to `Vec<T>` but compressed using palette compression.
+///
+/// Different values of `T`s are stored in a palette and are instead represented by keys
+/// (indices in that palette) that are stored in a bit-packed array
+/// so that each value takes as few bits as possible in memory.
+///
+/// ### Palette compression
+///
+/// This optimization is better leveraged for longer arrays that do not contain too many different
+/// values of `T`.
+///
+/// For example:
+/// - `[a, b, c, d, a, b, c, d, ...]` uses ~2 bits per value (4 different `T` values),
+/// - `[a, b, c, ..., x, y, z, a, b ...]` uses ~5 bits per value (26 different `T` values),
+/// - `[aa, ab, ..., zy, zz, aa, ...]` uses ~10 bits per value (676 different `T` values).
+///
+/// These estimates of number of bits used per value are not accounting for:
+/// - the palette overhead which contains these different `T` values without duplicates;
+///   this overhead is better mitigated for longer arrays.
+/// - the allocated memory for the bit-packed array of keys
+///   will allocate more than just the required number of bits (due to limitations in allocators
+///   that deal in words or even memory pages instead of bits, understandably ^^);
+///   this overhead is also better mitigated for longer arrays.
+///
+/// Locality or patterns in the different values of `T`s in the array do not
+/// influence the memory usage in any way.
+///
+/// For example:
+/// - `[a, a, a, a, ..., a, b, b, b, b, ..., b]` (cleanly sorted),
+/// - `[a, a, b, a, a, b, ..., a, a, b, a, a, b]` (repeating pattern),
+/// - `[a, b, a, a, b, a, b, b, b, b, a, ...]` (random order, no patter at all),
+///
+/// these will all have the same memory usage (given that they have the same length).
+///
+/// ### Performances
+///
+/// Random read access by index is always *O*(1).
+///
+/// When new `T` values are added to the `PalVec` that it did not already contain and that
+/// a last instance of a contained `T` value is not removed in the same operation,
+/// then the palette has to grow (there are more different values of `T` now).
+/// If the palette length gets past a power of two (for example from 4 to 5),
+/// then the operation will have an additional cost of *O*(*n*·log(*p*)+*p*)
+/// where *n* is the length of the `PalVec`
+/// and *p* is the length of the palette (the number of different `T` values).
+///
+/// TODO: Get some precise complexity calucation on the other operations.
+///
+/// ### Use-case of the other thing ([`OutPalVec`](`crate::outliers::OutPalVec`))
+///
+/// If there might be lots of instances of a few different values
+/// mixed with few instances of a lot of different values,
+/// then the few instances of a lot of different values might be a burden on palette compression.
+/// In such case, [`OutPalVec`](`crate::outliers::OutPalVec`) can solve this issue
+/// as it is literally `PalVec` but with an additional optimization for this case.
 #[derive(Clone)]
 pub struct PalVec<T>
 where

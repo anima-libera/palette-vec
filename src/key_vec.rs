@@ -1,3 +1,5 @@
+//! `KeyVec` type! It is a bit-packed array of `Key`s.
+
 use std::{
     cmp::Ordering,
     fmt::Debug,
@@ -9,10 +11,11 @@ use bitvec::{field::BitField, order::Lsb0, slice::BitSlice, vec::BitVec, view::B
 
 use crate::key::{Key, PaletteKeyType};
 
-/// An array of keys, each being represented with [`Self::keys_size()`] bits exactly,
+/// An array of `Key`s, each being represented with [`Self::keys_size()`] bits exactly,
 /// without padding between keys (so they are probably not byte-aligned).
 ///
-/// Supports a `keys_size` of zero, which doesn't allocate and only support the key value `0`.
+/// Supports a `keys_size` of zero,
+/// which doesn't allocate any array and only support the key value `0`.
 pub(crate) struct KeyVec {
     /// The size in bits of the memory representation of each key in `vec_or_len.vec`.
     ///
@@ -21,16 +24,15 @@ pub(crate) struct KeyVec {
     vec_or_len: BitVecOrLen,
 }
 
+/// - When `keys_size` is non-zero, then `vec` is the active field.
+/// - When `keys_size` is zero, then `len` is the active field.
 union BitVecOrLen {
     /// The array of keys, keys are alligned on `keys_size` bits.
-    /// The key at index `i` occupies the bit range `Self::key_bit_range(self.keys_size, i)`.
+    /// The key at index `i` occupies the bit range `KeyVec::key_bit_range(self.keys_size, i)`.
     ///
     /// The number of live bits in the `BitVec` is always a multiple of `keys_size`.
-    ///
-    /// When `keys_size` is non-zero, then this field is active.
-    /// When `keys_size` is zero, then `len` is active.
     vec: ManuallyDrop<BitVec<usize, Lsb0>>,
-    /// When `keys_size` is zero (0), there is no allocation to be done,
+    /// When `keys_size` is zero (0), then there is no allocation to be done,
     /// there is only the length of an imaginary vec of zero-sized elements,
     /// which are all the key value `0` represented with 0 bits.
     len: usize,

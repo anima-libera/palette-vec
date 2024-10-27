@@ -1,9 +1,5 @@
 //! Map type that maps indices to [`Opsk`]s, but optimized for minimal memory usage.
 
-// Note: There is no `u8` variant, this is because palette vectors of length below 256
-// are so small that it probably doesn't make a difference to optimize the index map
-// of such OutPalVec more than by using `u16`s.
-
 // TODO: There is in fact no valid situation in which an `opsk_value` requires number size growth
 // while the `index_in_key_vec` doesn't.
 
@@ -61,6 +57,13 @@ impl IndexMapLocalAccessOptimizer {
     }
 }
 
+/// Maps indices in the key vec of an `OutPalVec`
+/// (indices where there is an instance of the outlier key)
+/// to the OPSK of the element at that index.
+///
+/// That means uh.. it maps unsigned numbers to unsigned numbers.
+///
+/// Very mindful of memory usage, know precisely its memory usage (flat).
 #[derive(Clone)]
 pub(crate) struct IndexMap {
     inner: IndexMapEnum,
@@ -75,6 +78,9 @@ enum IndexMapEnum {
     U16(IndexMapSized<u16>),
     U32(IndexMapSized<u32>),
     U64(IndexMapSized<u64>),
+    // Note: There is no `U8` variant, this is because palette vectors of length below 256
+    // are so small that it probably doesn't make a difference to optimize the index map
+    // of such OutPalVec more than by using `u16`s.
 }
 
 pub(crate) enum BrokenInvariantInIndexMap {

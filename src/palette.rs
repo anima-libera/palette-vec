@@ -40,6 +40,7 @@ where
     }
 }
 
+/// Maps keys to values of `T` alongside their instance count in a `PalVec`.
 #[derive(Clone)]
 pub(crate) struct Palette<T, K>
 where

@@ -1,4 +1,8 @@
-//! Palette-compressed Vec-like collection.
+//! Palette-compressed Vec-like collections.
+//!
+//! - `PalVec<T>` is classic palette compression.
+//! - `OutPalVec<T>` is palette compression with a super epic original optimization twist on top
+//!   that allows for better compression with some small compromise on performance.
 
 mod index_map;
 mod key;
