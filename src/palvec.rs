@@ -80,7 +80,7 @@ where
     _phantom: PhantomData<T>,
 }
 
-pub(crate) enum BrokenInvariantInPalVec {
+pub enum BrokenInvariantInPalVec {
     BrokenKeyVec(BrokenInvariantInKeyVec),
     BrokenPalette(BrokenInvariantInPalette<Key>),
     /// The palette uses at least one key that cannot fit in the key vec.
@@ -122,11 +122,11 @@ where
     /// and that terminate without panicking
     /// shall leave `Self` in a valid state,
     /// if that does not happen then the method has a bug.
-    pub(crate) fn check_all_invariants(&self) -> Result<(), BrokenInvariantInPalVec> {
-        if let Err(err) = self.key_vec.check_all_invariants() {
+    pub fn check_invariants(&self) -> Result<(), BrokenInvariantInPalVec> {
+        if let Err(err) = self.key_vec.check_invariants() {
             return Err(BrokenInvariantInPalVec::BrokenKeyVec(err));
         }
-        if let Err(err) = self.palette.check_all_invariants() {
+        if let Err(err) = self.palette.check_invariants() {
             return Err(BrokenInvariantInPalVec::BrokenPalette(err));
         }
 
@@ -418,7 +418,7 @@ mod tests {
         let palvec: PalVec<()> = PalVec::new();
         assert!(palvec.is_empty());
         assert_eq!(palvec.len(), 0);
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(palvec.len(), 1);
         palvec.push((), 1);
         assert_eq!(palvec.len(), 2);
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
         let mut palvec: PalVec<i32> = PalVec::new();
         palvec.push(42, 1);
         assert_eq!(palvec.get(0), Some(&42));
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -449,14 +449,14 @@ mod tests {
         assert!(palvec.get(0).is_some());
         assert!(palvec.get(1).is_some());
         assert!(palvec.get(2).is_none());
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
     fn pop_empty() {
         let mut palvec: PalVec<()> = PalVec::new();
         assert_eq!(palvec.pop().map_as_ref(), None);
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("owo"));
         assert_eq!(palvec.pop().map_as_ref().map(AsRef::as_ref), Some("uwu"));
         assert_eq!(palvec.pop().map_as_ref(), None);
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(palvec.pop().map_copied(), Some(5));
         assert_eq!(palvec.pop().map_copied(), Some(8));
         assert_eq!(palvec.pop().map_as_ref(), None);
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -490,7 +490,7 @@ mod tests {
         palvec.set(1, 1);
         assert_eq!(palvec.get(0), Some(&0));
         assert_eq!(palvec.get(1), Some(&1));
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -535,7 +535,7 @@ mod tests {
         palvec.push(5, 1);
         assert!(palvec.palette.contains(&8));
         assert!(palvec.palette.contains(&5));
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -547,7 +547,7 @@ mod tests {
         palvec.pop();
         assert!(!palvec.palette.contains(&8));
         assert!(!palvec.palette.contains(&5));
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -562,7 +562,7 @@ mod tests {
             assert_eq!(palvec.pop().map_copied(), Some(i));
             assert!(!palvec.palette.contains(&i));
         }
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -579,7 +579,7 @@ mod tests {
                 assert!(!palvec.palette.contains(&j));
             }
         }
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -589,7 +589,7 @@ mod tests {
         palvec.push(5, 1);
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 
     #[test]
@@ -601,6 +601,6 @@ mod tests {
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
         assert_eq!(palvec.len(), 2);
-        assert!(palvec.check_all_invariants().is_ok());
+        assert!(palvec.check_invariants().is_ok());
     }
 }

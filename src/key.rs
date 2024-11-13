@@ -23,14 +23,14 @@ use crate::key_vec::KeyVec;
 ///
 /// Using different types for different kinds of keys instead of just `usize`
 /// allows for better type safety and prevents mixed key bugs.
-pub(crate) trait PaletteKeyType: Debug + Clone + Copy + PartialEq + Eq {
+pub trait PaletteKeyType: Debug + Clone + Copy + PartialEq + Eq {
     fn with_value(value: usize) -> Self;
     fn value(self) -> usize;
 }
 
 /// Key type that is used for common elements, used by the `KeyVec`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Key {
+pub struct Key {
     pub(crate) value: usize,
 }
 
@@ -81,7 +81,7 @@ pub(crate) fn keys_size_for_this_many_keys(how_many: usize) -> usize {
 /// Hence the name (these are keys that are only used on the side of the outlier palette,
 /// the `KeyVec` and common palette never see such keys).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Opsk {
+pub struct Opsk {
     pub(crate) value: usize,
 }
 

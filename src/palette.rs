@@ -51,7 +51,7 @@ where
     _phantom: PhantomData<K>,
 }
 
-pub(crate) enum BrokenInvariantInPalette<K>
+pub enum BrokenInvariantInPalette<K>
 where
     K: PaletteKeyType,
 {
@@ -73,7 +73,7 @@ where
     /// and that terminate without panicking
     /// shall leave `Self` in a valid state,
     /// if that does not happen then the method has a bug.
-    pub(crate) fn check_all_invariants(&self) -> Result<(), BrokenInvariantInPalette<K>> {
+    pub(crate) fn check_invariants(&self) -> Result<(), BrokenInvariantInPalette<K>> {
         for index_a in 0..self.vec.len() {
             for index_b in (index_a + 1)..self.vec.len() {
                 let entry_a = &self.vec[index_a];
