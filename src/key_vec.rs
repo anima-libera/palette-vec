@@ -38,15 +38,6 @@ union BitVecOrLen {
     len: usize,
 }
 
-impl Drop for KeyVec {
-    fn drop(&mut self) {
-        if 0 < self.keys_size {
-            // SAFETY: `vec` is the active field iff `keys_size` is zero.
-            unsafe { ManuallyDrop::drop(&mut self.vec_or_len.vec) }
-        }
-    }
-}
-
 pub enum BrokenInvariantInKeyVec {
     /// The KeyVec's `keys_size` is bigger than `Key::MAX_SIZE`.
     ///
@@ -96,7 +87,18 @@ impl KeyVec {
 
         Ok(())
     }
+}
 
+impl Drop for KeyVec {
+    fn drop(&mut self) {
+        if 0 < self.keys_size {
+            // SAFETY: `vec` is the active field iff `keys_size` is zero.
+            unsafe { ManuallyDrop::drop(&mut self.vec_or_len.vec) }
+        }
+    }
+}
+
+impl KeyVec {
     /// Creates an empty `KeyVec` (with `keys_size` initially set to zero).
     ///
     /// Does not allocate now,

@@ -203,7 +203,12 @@ where
 
         Ok(())
     }
+}
 
+impl<T> PalVec<T>
+where
+    T: Clone + Eq,
+{
     /// Creates an empty `PalVec`.
     ///
     /// Does not allocate now,

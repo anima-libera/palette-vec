@@ -6,40 +6,6 @@ use crate::{
     BorrowedOrOwned,
 };
 
-pub(crate) struct PaletteEntry<T> {
-    count: usize,
-    /// Initialized iff `count` is non-zero.
-    element: MaybeUninit<T>,
-}
-
-impl<T> Default for PaletteEntry<T> {
-    fn default() -> Self {
-        Self {
-            count: 0,
-            element: MaybeUninit::uninit(),
-        }
-    }
-}
-
-impl<T> Clone for PaletteEntry<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        Self {
-            count: self.count,
-            element: if self.count == 0 {
-                MaybeUninit::uninit()
-            } else {
-                MaybeUninit::new({
-                    // SAFETY: The entry's `count` is non zero so the element is initialized.
-                    unsafe { self.element.assume_init_ref().clone() }
-                })
-            },
-        }
-    }
-}
-
 /// Maps keys to values of `T` alongside their instance count in a `PalVec`.
 #[derive(Clone)]
 pub(crate) struct Palette<T, K>
@@ -49,6 +15,12 @@ where
 {
     vec: Vec<PaletteEntry<T>>,
     _phantom: PhantomData<K>,
+}
+
+pub(crate) struct PaletteEntry<T> {
+    count: usize,
+    /// Initialized iff `count` is non-zero.
+    element: MaybeUninit<T>,
 }
 
 pub enum BrokenInvariantInPalette<K>
@@ -97,7 +69,41 @@ where
 
         Ok(())
     }
+}
 
+impl<T> Default for PaletteEntry<T> {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            element: MaybeUninit::uninit(),
+        }
+    }
+}
+
+impl<T> Clone for PaletteEntry<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            count: self.count,
+            element: if self.count == 0 {
+                MaybeUninit::uninit()
+            } else {
+                MaybeUninit::new({
+                    // SAFETY: The entry's `count` is non zero so the element is initialized.
+                    unsafe { self.element.assume_init_ref().clone() }
+                })
+            },
+        }
+    }
+}
+
+impl<T, K> Palette<T, K>
+where
+    T: Clone + Eq,
+    K: PaletteKeyType,
+{
     /// Creates an empty palette.
     ///
     /// Does not allocate now,

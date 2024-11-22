@@ -68,11 +68,23 @@ This would add memory usage on the palette, but make performances better for wri
 Instead of a reverse hash map, what if:
 Statically opt-in feature that allows to get "adders" for elements. An adder corresponds to an element and knows its key (in the PalVec it is bound to). When using `set` or `push` to add an element for which we have an adder, then we can use the adder's knowledge of the element's key to find it immediately in the palette which makes it fast (instead of the slow way of iterating thorugh the palette and checking for equality with each palette entry element). We have to make sure that the adder's key is updated (or at least invalidated) when the element's key changes.
 
+## Reverse hash map but good
+Instead of fast adders, what if:
+Small compile-time sized circular buffer that caches pairs of hash and key for elements?
+
 ## KeyVec `change_keys_size` taking an `Option<FnMut(Key) -> Key>`
 We are iterating over all the keys to change their size. If we do this for like an `OutPalVec` memory optimization then we should also change the keys there at the same time instead of iterating twice (think about the cache!).
 
 ## Shrinking
 Add methods to shrink the allocations and use smaller keys to reduce memory usage.
+
+## More IndexMap variants
+Currently we have a (16,16), a (32,32) and a (64,64) variant (where the first number is the number of bits for the index, and the second number is the number of bits for the OPSK). This is so that we deal with entries that are properly aligned in memory and that we do not resize too often.
+But what about entries such as (10,6), (50,14), that kind of stuff? These are aligned, and it is not as if we need super epic bit operations to extract the values either.
+We could even make the index map have a runtime parameter that describes the number of bits used by OPSKs (the rest is used by the index), that can be made higer if higher OPSKs are used.
+
+## KeyVec with branchless number access shenanigans
+Capping the keys in `u32` (instead of `uszize`)
 
 ## Constant length
 Add a way to tell a PalVec that it has a given length and this is it. The KeyVec can still have maybe one or two keys size growth loads of additional capacity ready in case the keys size increases, but then it must be exactly a multiple (or else there is memory that is just wasted, which doesn't serve any purpose) because the length will not change. This constant-length-property could be a type parameter (that doesn't contain the length, that can still be decided at runtime with the `with_len` constructor).

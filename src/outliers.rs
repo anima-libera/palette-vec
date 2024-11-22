@@ -37,161 +37,6 @@ where
     memory_optimization_policy: M,
 }
 
-/// Mutable cached information that provides hints to internal components of an `OutPalVec`
-/// to make some accesses faster when acessing the `OutPalVec` with locality in mind
-/// (for example when iterating over it in order (both dorections work) or potentially
-/// accessing the same index multiple times).
-pub struct OutAccessOptimizer {
-    index_map_access: IndexMapLocalAccessOptimizer,
-}
-
-impl OutAccessOptimizer {
-    pub fn new() -> OutAccessOptimizer {
-        OutAccessOptimizer {
-            index_map_access: IndexMapLocalAccessOptimizer::new(),
-        }
-    }
-}
-
-impl Default for OutAccessOptimizer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn as_index_map_access<'a>(
-    access: &'a mut Option<&mut OutAccessOptimizer>,
-) -> IndexMapAccessOptimizer<'a> {
-    match access {
-        None => IndexMapAccessOptimizer::None,
-        Some(access) => IndexMapAccessOptimizer::Local(&mut access.index_map_access),
-    }
-}
-
-/// Trait that a automatic memory optimization policy type
-/// passed to the corresponding `OutPalVec` type parameter must have.
-///
-/// It describes how often the `OutPalVec` will perform
-/// potentially expensive memory optimization operations on its own.
-pub trait AutoMemoryOptimizationPolicy
-where
-    Self: Clone,
-{
-    fn new() -> Self;
-
-    const NEW_ELEMENT_BE_COMMON: bool;
-
-    /// Whenever the `OutPalVec` has an occasion to perform memory optimization operations,
-    /// this method is asked if that should be done.
-    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool;
-
-    /// Returns `Err` if it is detected that an invariant is not respected,
-    /// meaning that this `Self` is not in a valid state, it is corrupted.
-    ///
-    /// Safe methods used on a valid `Self`s (if input is needed)
-    /// and that terminate without panicking
-    /// shall leave `Self` in a valid state,
-    /// if that does not happen then the method has a bug.
-    fn check_invariants(&self) -> Result<(), Self::BrokenInvariant> {
-        Ok(())
-    }
-
-    type BrokenInvariant;
-}
-
-pub enum NoBrokenInvariantsToCheckFor {}
-
-/// The `OutPalVec` will never perform memory optimization operations on its own.
-///
-/// With such policy, it is important to manually trigger the memory optimization method of
-/// the `OutPalVec` or else it will remain in a state no better than a `PalVec`.
-/// Use this policy when you know what you are doing
-/// and that the times you manually trigger memory optimization are sufficient.
-#[derive(Clone)]
-pub struct AutoMemoryOptimizationPolicyNever;
-impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyNever {
-    fn new() -> Self {
-        AutoMemoryOptimizationPolicyNever
-    }
-
-    const NEW_ELEMENT_BE_COMMON: bool = true;
-
-    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
-        false
-    }
-
-    type BrokenInvariant = NoBrokenInvariantsToCheckFor;
-}
-
-/// The `OutPalVec` will perform memory optimization operations every time it gets the chance.
-///
-/// This is probably bad, [`AutoMemoryOptimizationPolicyEveryNOccasions`] is probably better.
-#[derive(Clone)]
-pub struct AutoMemoryOptimizationPolicyAlways;
-impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyAlways {
-    fn new() -> Self {
-        AutoMemoryOptimizationPolicyAlways
-    }
-
-    const NEW_ELEMENT_BE_COMMON: bool = false;
-
-    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
-        true
-    }
-
-    type BrokenInvariant = NoBrokenInvariantsToCheckFor;
-}
-
-/// The `OutPalVec` will perform memory optimization operations once every N occasions.
-///
-/// The value of `N` might be something to be tweaked.
-#[derive(Clone)]
-pub struct AutoMemoryOptimizationPolicyEveryNOccasions<const N: usize = 100> {
-    counter: usize,
-}
-impl<const N: usize> AutoMemoryOptimizationPolicy
-    for AutoMemoryOptimizationPolicyEveryNOccasions<N>
-{
-    fn new() -> Self {
-        AutoMemoryOptimizationPolicyEveryNOccasions { counter: 0 }
-    }
-
-    const NEW_ELEMENT_BE_COMMON: bool = false;
-
-    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
-        self.counter += 1;
-        if N <= self.counter {
-            self.counter = 0;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn check_invariants(&self) -> Result<(), BrokenInvariantInAutoMemoryOptimizationPolicy> {
-        if N <= self.counter {
-            return Err(
-                BrokenInvariantInAutoMemoryOptimizationPolicy::CounterGotPastN {
-                    counter: self.counter,
-                    n: N,
-                },
-            );
-        }
-
-        Ok(())
-    }
-
-    type BrokenInvariant = BrokenInvariantInAutoMemoryOptimizationPolicy;
-}
-
-pub enum BrokenInvariantInAutoMemoryOptimizationPolicy {
-    /// The counter got past N.
-    ///
-    /// This is not supposed to happen, the counter counts from 0 to N-1 and then
-    /// is reset to 0 when it hits N.
-    CounterGotPastN { counter: usize, n: usize },
-}
-
 pub enum BrokenInvariantInOutPalVec<M>
 where
     M: AutoMemoryOptimizationPolicy,
@@ -538,7 +383,13 @@ where
 
         Ok(())
     }
+}
 
+impl<T, M> OutPalVec<T, M>
+where
+    T: Clone + Eq + Debug,
+    M: AutoMemoryOptimizationPolicy,
+{
     pub fn new() -> Self {
         Self {
             key_vec: KeyVec::new(),
@@ -1166,6 +1017,161 @@ where
             }
         }
     }
+}
+
+/// Mutable cached information that provides hints to internal components of an `OutPalVec`
+/// to make some accesses faster when accessing the `OutPalVec` with locality in mind
+/// (for example when iterating over it in order (either direction) or potentially
+/// accessing the same index multiple times).
+pub struct OutAccessOptimizer {
+    index_map_access: IndexMapLocalAccessOptimizer,
+}
+
+impl OutAccessOptimizer {
+    pub fn new() -> OutAccessOptimizer {
+        OutAccessOptimizer {
+            index_map_access: IndexMapLocalAccessOptimizer::new(),
+        }
+    }
+}
+
+impl Default for OutAccessOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn as_index_map_access<'a>(
+    access: &'a mut Option<&mut OutAccessOptimizer>,
+) -> IndexMapAccessOptimizer<'a> {
+    match access {
+        None => IndexMapAccessOptimizer::None,
+        Some(access) => IndexMapAccessOptimizer::Local(&mut access.index_map_access),
+    }
+}
+
+/// Trait that a automatic memory optimization policy type
+/// passed to the corresponding `OutPalVec` type parameter must have.
+///
+/// It describes how often the `OutPalVec` will perform
+/// potentially expensive memory optimization operations on its own.
+pub trait AutoMemoryOptimizationPolicy
+where
+    Self: Clone,
+{
+    fn new() -> Self;
+
+    const NEW_ELEMENT_BE_COMMON: bool;
+
+    /// Whenever the `OutPalVec` has an occasion to perform memory optimization operations,
+    /// this method is asked if that should be done.
+    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool;
+
+    /// Returns `Err` if it is detected that an invariant is not respected,
+    /// meaning that this `Self` is not in a valid state, it is corrupted.
+    ///
+    /// Safe methods used on a valid `Self`s (if input is needed)
+    /// and that terminate without panicking
+    /// shall leave `Self` in a valid state,
+    /// if that does not happen then the method has a bug.
+    fn check_invariants(&self) -> Result<(), Self::BrokenInvariant> {
+        Ok(())
+    }
+
+    type BrokenInvariant;
+}
+
+pub enum NoBrokenInvariantsToCheckFor {}
+
+/// The `OutPalVec` will never perform memory optimization operations on its own.
+///
+/// With such policy, it is important to manually trigger the memory optimization method of
+/// the `OutPalVec` or else it will remain in a state no better than a `PalVec`.
+/// Use this policy when you know what you are doing
+/// and that the times you manually trigger memory optimization are sufficient.
+#[derive(Clone)]
+pub struct AutoMemoryOptimizationPolicyNever;
+impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyNever {
+    fn new() -> Self {
+        AutoMemoryOptimizationPolicyNever
+    }
+
+    const NEW_ELEMENT_BE_COMMON: bool = true;
+
+    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
+        false
+    }
+
+    type BrokenInvariant = NoBrokenInvariantsToCheckFor;
+}
+
+/// The `OutPalVec` will perform memory optimization operations every time it gets the chance.
+///
+/// This is probably bad, [`AutoMemoryOptimizationPolicyEveryNOccasions`] is probably better.
+#[derive(Clone)]
+pub struct AutoMemoryOptimizationPolicyAlways;
+impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyAlways {
+    fn new() -> Self {
+        AutoMemoryOptimizationPolicyAlways
+    }
+
+    const NEW_ELEMENT_BE_COMMON: bool = false;
+
+    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
+        true
+    }
+
+    type BrokenInvariant = NoBrokenInvariantsToCheckFor;
+}
+
+/// The `OutPalVec` will perform memory optimization operations once every N occasions.
+///
+/// The value of `N` might be something to be tweaked.
+#[derive(Clone)]
+pub struct AutoMemoryOptimizationPolicyEveryNOccasions<const N: usize = 100> {
+    counter: usize,
+}
+impl<const N: usize> AutoMemoryOptimizationPolicy
+    for AutoMemoryOptimizationPolicyEveryNOccasions<N>
+{
+    fn new() -> Self {
+        AutoMemoryOptimizationPolicyEveryNOccasions { counter: 0 }
+    }
+
+    const NEW_ELEMENT_BE_COMMON: bool = false;
+
+    fn perform_memory_optimization_on_this_occasion(&mut self) -> bool {
+        self.counter += 1;
+        if N <= self.counter {
+            self.counter = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn check_invariants(&self) -> Result<(), BrokenInvariantInAutoMemoryOptimizationPolicy> {
+        if N <= self.counter {
+            return Err(
+                BrokenInvariantInAutoMemoryOptimizationPolicy::CounterGotPastN {
+                    counter: self.counter,
+                    n: N,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    type BrokenInvariant = BrokenInvariantInAutoMemoryOptimizationPolicy;
+}
+
+pub enum BrokenInvariantInAutoMemoryOptimizationPolicy {
+    /// The counter got past N.
+    ///
+    /// This is not supposed to happen, the counter counts from 0 to N-1 and then
+    /// is reset to 0 when it hits N.
+    CounterGotPastN { counter: usize, n: usize },
 }
 
 #[cfg(test)]
