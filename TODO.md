@@ -84,7 +84,14 @@ But what about entries such as (10,6), (50,14), that kind of stuff? These are al
 We could even make the index map have a runtime parameter that describes the number of bits used by OPSKs (the rest is used by the index), that can be made higer if higher OPSKs are used.
 
 ## KeyVec with branchless number access shenanigans
-Capping the keys in `u32` (instead of `uszize`)
+Capping the keys in `u32` (instead of `uszize`) and putting two adjacent `u32`s in the internal vec of the KeyVec together to make a `u64` to use branchlessly to get/set the key. This works (i've done it in an other implementation i swear), but it should be bechmarked againts the cirrent bitvec-based implementation.
+
+## OutPalVec generic parameter to cap the IndexMap length
+The fear of having the IndexMap left unbounded and having it silently growing to proportions that are too big to our taste is present in our hearts. Capped IndexMap means capped search time when the access hint misses, which might be good.
+Maybe allow the IndexMap to be capped at a constant length, but also allow it to be capped to a proportion of the length of the OutPalVec.
+
+## OutPalVec generic parameter to make outliers become common upon instance count threshold
+Calling `perform_memory_opimization` once is better than nothing, but then if an element value was put in the outlier palette and then is being added way too much instances by the user without other calls to `perform_memory_opimization`, then the IndexMap grows too much. Having a common element become few is way less of a problem than having an outlier element become numerous (because in the first case it just makes the outlier optimization a bit less effective than its potential maximum efficiency, but in the second case can get so bad that it becomes worse than classic palette compression).
 
 ## Constant length
 Add a way to tell a PalVec that it has a given length and this is it. The KeyVec can still have maybe one or two keys size growth loads of additional capacity ready in case the keys size increases, but then it must be exactly a multiple (or else there is memory that is just wasted, which doesn't serve any purpose) because the length will not change. This constant-length-property could be a type parameter (that doesn't contain the length, that can still be decided at runtime with the `with_len` constructor).
