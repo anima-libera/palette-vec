@@ -127,7 +127,8 @@ where
         }
     }
 
-    /// Returns the number of entries in the palette (and not the total number of instances).
+    /// Returns the number of used entries in the palette
+    /// (not to be confused with the total number of instances).
     pub(crate) fn len(&self) -> usize {
         self.vec
             .iter()

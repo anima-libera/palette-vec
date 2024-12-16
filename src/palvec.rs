@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::ops::Index;
 
-use crate::key::{Key, KeyAllocator, PaletteKeyType};
+use crate::key::{keys_size_for_this_many_keys, Key, KeyAllocator, PaletteKeyType};
 use crate::key_vec::{BrokenInvariantInKeyVec, KeyVec};
 use crate::palette::{BrokenInvariantInPalette, CountAndKeySorting, Palette};
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
@@ -384,6 +384,47 @@ where
         #[allow(clippy::let_and_return)]
         key_vec_memory_in_bytes
     }
+
+    pub fn perform_memory_opimization(&mut self) {
+        if self.palette.len() == 0 {
+            return;
+        }
+
+        let smallest_possible_keys_size = keys_size_for_this_many_keys(self.palette.len());
+        let changing_keys_size_is_useful = smallest_possible_keys_size < self.key_vec.keys_size();
+        if !changing_keys_size_is_useful {
+            return;
+        }
+
+        let highest_used_key = self.palette.highest_used_key().unwrap();
+        let mut key_rewrite_table: Vec<Key> =
+            (0..=highest_used_key.value).map(Key::with_value).collect();
+
+        loop {
+            let key = self.palette.highest_used_key().unwrap();
+            if smallest_possible_keys_size == key.min_size() {
+                break;
+            }
+            let entry = self.palette.remove_entry(key).unwrap();
+            let new_key = self.palette.add_entry(
+                entry,
+                &mut KeyAllocator {
+                    key_vec: &mut self.key_vec,
+                    reserved_key: None,
+                },
+            );
+            key_rewrite_table[key.value] = new_key;
+        }
+
+        // TODO: do this rewrite in `change_keys_size` so that we only iterate once.
+        for index in 0..self.len() {
+            let old_key = self.key_vec.get(index).unwrap();
+            let new_key = key_rewrite_table[old_key.value];
+            self.key_vec.set(index, new_key);
+        }
+
+        self.key_vec.change_keys_size(smallest_possible_keys_size);
+    }
 }
 
 impl<T> Default for PalVec<T>
@@ -606,6 +647,22 @@ mod tests {
         assert_eq!(palvec[0], 8);
         assert_eq!(palvec[1], 5);
         assert_eq!(palvec.len(), 2);
+        assert!(palvec.check_invariants().is_ok());
+    }
+
+    #[test]
+    fn memory_opimization() {
+        let mut palvec: PalVec<i32> = PalVec::new();
+        for i in 0..100 {
+            palvec.push(i, 1);
+        }
+        for i in 0..50 {
+            palvec.set(i, 1);
+        }
+        palvec.perform_memory_opimization();
+        for i in (0..100).rev() {
+            assert_eq!(palvec.pop().map_copied(), Some(if i < 50 { 1 } else { i }));
+        }
         assert!(palvec.check_invariants().is_ok());
     }
 }
