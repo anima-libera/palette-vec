@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use std::ops::Index;
 
 use crate::key::{keys_size_for_this_many_keys, Key, KeyAllocator, PaletteKeyType};
-use crate::key_vec::{BrokenInvariantInKeyVec, KeyMapping, KeyVec};
+use crate::key_vec::{BrokenInvariantInKeyVec, KeyVec};
 use crate::palette::{BrokenInvariantInPalette, CountAndKeySorting, Palette};
 use crate::utils::{borrowed_or_owned::BorrowedOrOwned, view_to_owned::ViewToOwned};
 
@@ -416,18 +416,10 @@ where
             key_rewrite_table[key.value] = new_key;
         }
 
-        struct MappingViaRewriteTable {
-            key_rewrite_table: Vec<Key>,
-        }
-        impl KeyMapping for MappingViaRewriteTable {
-            fn map_key(&mut self, _index: usize, old_key: Key) -> Key {
-                self.key_rewrite_table[old_key.value]
-            }
-        }
-        let mapping = MappingViaRewriteTable { key_rewrite_table };
-
         self.key_vec
-            .change_keys_size(smallest_possible_keys_size, mapping);
+            .change_keys_size_and_map_keys(smallest_possible_keys_size, |_index, old_key| {
+                key_rewrite_table[old_key.value]
+            });
     }
 }
 
