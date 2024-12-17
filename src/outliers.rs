@@ -8,7 +8,7 @@ use crate::{
         BrokenInvariantInIndexMap, IndexMap, IndexMapAccessOptimizer, IndexMapLocalAccessOptimizer,
     },
     key::{keys_size_for_this_many_keys, Key, KeyAllocator, Opsk, OpskAllocator, PaletteKeyType},
-    key_vec::{BrokenInvariantInKeyVec, KeyVec},
+    key_vec::{BrokenInvariantInKeyVec, KeyMapping, KeyVec, NoKeyMapping},
     palette::{BrokenInvariantInPalette, CountAndKey, CountAndKeySorting, Palette, PaletteEntry},
     utils::view_to_owned::ViewToOwned,
     BorrowedOrOwned,
@@ -963,7 +963,8 @@ where
             }
         }
 
-        self.key_vec.change_keys_size(plan.new_keys_size_in_bits);
+        self.key_vec
+            .change_keys_size(plan.new_keys_size_in_bits, NoKeyMapping);
     }
 
     pub fn perform_memory_opimization(&mut self) {

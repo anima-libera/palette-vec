@@ -232,6 +232,7 @@ impl KeyVec {
     /// # Panics
     ///
     /// Panics if `index` is out of bounds.
+    ///
     /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
     pub(crate) fn set(&mut self, index: usize, key: Key) {
         if index < self.len() {
@@ -369,16 +370,33 @@ impl KeyVec {
         self._visit_vec_or_len_mut(|vec| vec.reserve(additional * keys_size), |_len| {});
     }
 
+    /// ## When `key_mapping` is [`NoKeyMapping`]
+    ///
     /// Adapts the representation of the contained keys so that now
     /// every key is represented on `new_keys_size` bits.
     /// The value of the keys doesn't change, the content is still the same,
-    /// except it will now work with a bigger `keys_size` to accomodate for
-    /// more possible key values.
+    /// except it will now work with a different `keys_size`
+    /// - either to accomodate for bigger key values,
+    /// - or to save memory when the keys can all be represented on less bits.
+    ///
+    /// ## When a non-trivial `key_mapping` is provided
+    ///
+    /// As all the keys are iterated over to be moved and resized internally,
+    /// they can also be passed to the given `key_mapping` to be mapped to a different value.
+    ///
+    /// Note: [`NoKeyMapping`] is not just the identity mapping, it is a mapping that defines
+    /// [`KeyMapping::IS_IGNORED`] as `true`, which allows some cases to be a lot faster
+    /// (when there is no need to iterate over the keys) by opimizing away the remapping.
     ///
     /// # Panics
     ///
+    /// Panics if any key (after mapping if any) does not fit the given `new_keys_size`.
+    ///
     /// Panics if `new_keys_size` is not `<= Key::MAX_SIZE`.
-    pub(crate) fn change_keys_size(&mut self, new_keys_size: usize) {
+    pub(crate) fn change_keys_size<MAP>(&mut self, new_keys_size: usize, mut key_mapping: MAP)
+    where
+        MAP: KeyMapping,
+    {
         if Key::MAX_SIZE < new_keys_size {
             panic!(
                 "new key size (is {} bits) should be <= `Key::MAX_SIZE` (is {})",
@@ -388,23 +406,52 @@ impl KeyVec {
         }
         if self.keys_size == 0 {
             if 0 < new_keys_size {
-                let len = {
-                    // SAFETY: `keys_size` is still zero at this point.
-                    unsafe { self.vec_or_len.len }
-                };
-                // All the key values are `0`, so all the bits shall be zeros.
-                self.vec_or_len = BitVecOrLen {
-                    vec: ManuallyDrop::new(BitVec::repeat(false, len * new_keys_size)),
-                };
-                // `keys_size` is updated at the end of the function.
+                // From `keys_size == 0` to `keys_size != 0`.
+                // We have to switch the active field from `len` to `vec`.
+
+                if !MAP::IS_IGNORED {
+                    // TODO: Implement!
+                    unimplemented!("change_keys_size from 0 to non-0 with a mapper");
+                } else {
+                    let len = {
+                        // SAFETY: `keys_size` is still zero at this point.
+                        unsafe { self.vec_or_len.len }
+                    };
+                    // All the key values are `0`, so all the bits shall be zeros.
+                    self.vec_or_len = BitVecOrLen {
+                        vec: ManuallyDrop::new(BitVec::repeat(false, len * new_keys_size)),
+                    };
+                    // `keys_size` is updated at the end of the function.
+                }
+            } else {
+                // When `keys_size == 0` and `keys_size` does not change.
+
+                if !MAP::IS_IGNORED {
+                    // TODO: Maybe implement this?
+                    // This is a bit of a stupid case, where we would do nothing
+                    // but still have to check that for all the indices calls to
+                    // `key_mapping.map_key(index, 0)` always return 0.
+                    // This is not something that has any use, maybe paniking is good.
+                    unimplemented!("change_keys_size from 0 to non-0 with a mapper");
+                } else {
+                    // Nothing to do.
+                }
             }
         } else {
             match self.keys_size.cmp(&new_keys_size) {
                 Ordering::Equal => {
-                    // Nothing to do.
+                    // When `keys_size != 0` and `keys_size` does not change.
+
+                    if !MAP::IS_IGNORED {
+                        // TODO: Implement!
+                        unimplemented!("change_keys_size when the non-0");
+                    } else {
+                        // Nothing to do.
+                    }
                 }
                 Ordering::Less => {
-                    // The `keys_size` has to increase.
+                    // When `keys_size != 0` and the `keys_size` has to increase.
+
                     let old_keys_size = self.keys_size;
                     let len = self.len();
                     // SAFETY: `keys_size` is non-zero so `vec` is the active field.
@@ -428,38 +475,49 @@ impl KeyVec {
                         // to accomodate for the biggest size of the reigion with bigger keys.
                         for index in (0..len).rev() {
                             // Get the last not-yet moved key from its old position.
-                            let key: Key = {
+                            let old_key: Key = {
                                 let bit_range = Self::key_bit_range(old_keys_size, index);
                                 Key::with_value(self.vec_or_len.vec.deref_mut()[bit_range].load())
+                            };
+                            let new_key = if MAP::IS_IGNORED {
+                                old_key
+                            } else {
+                                key_mapping.map_key(index, old_key)
                             };
                             // Move the key to its new position and
                             // represent it with the new key size
                             // (which is bigger than the old key size so we know the key fits).
                             {
                                 let bit_range = Self::key_bit_range(new_keys_size, index);
-                                self.vec_or_len.vec.deref_mut()[bit_range].store(key.value);
+                                self.vec_or_len.vec.deref_mut()[bit_range].store(new_key.value);
                             }
                         }
                     }
                 }
                 Ordering::Greater => {
-                    // The `keys_size` has to decrease.
+                    // When `keys_size != 0` and the `keys_size` has to decrease.
+
                     let old_keys_size = self.keys_size;
                     let len = self.len();
                     // SAFETY: `keys_size` is non-zero so `vec` is the active field.
                     unsafe {
                         for index in 0..len {
                             // Get the last not-yet moved key from its old position.
-                            let key: Key = {
+                            let old_key: Key = {
                                 let bit_range = Self::key_bit_range(old_keys_size, index);
                                 Key::with_value(self.vec_or_len.vec.deref_mut()[bit_range].load())
                             };
-                            debug_assert!(key.min_size() <= new_keys_size);
+                            let new_key = if MAP::IS_IGNORED {
+                                old_key
+                            } else {
+                                key_mapping.map_key(index, old_key)
+                            };
+                            assert!(new_key.min_size() <= new_keys_size);
                             // Move the key to its new position and
                             // represent it with the new key size.
                             {
                                 let bit_range = Self::key_bit_range(new_keys_size, index);
-                                self.vec_or_len.vec.deref_mut()[bit_range].store(key.value);
+                                self.vec_or_len.vec.deref_mut()[bit_range].store(new_key.value);
                             }
                         }
                         self.vec_or_len
@@ -482,7 +540,7 @@ impl KeyVec {
             // It already fits, nothing to do.
         } else {
             // Properly making `keys_size` bigger so that the new key fits.
-            self.change_keys_size(min_size);
+            self.change_keys_size(min_size, NoKeyMapping);
         }
     }
 
@@ -523,6 +581,21 @@ impl Debug for KeyVec {
             debug_list.entry(&self.get(index).unwrap().value);
         }
         debug_list.finish()
+    }
+}
+
+pub(crate) trait KeyMapping {
+    const IS_IGNORED: bool = false;
+    fn map_key(&mut self, index: usize, old_key: Key) -> Key;
+}
+
+pub(crate) struct NoKeyMapping;
+
+impl KeyMapping for NoKeyMapping {
+    const IS_IGNORED: bool = true;
+
+    fn map_key(&mut self, _index: usize, _old_key: Key) -> Key {
+        panic!("IS_IGNORED is true so the map_key method should not be called");
     }
 }
 
@@ -580,7 +653,7 @@ mod tests {
         assert_is_len(&key_vec, 1);
         key_vec._push(Key::with_value(0), 1);
         assert_is_len(&key_vec, 2);
-        key_vec.change_keys_size(1);
+        key_vec.change_keys_size(1, NoKeyMapping);
         assert_is_vec(&key_vec, 2);
         key_vec._push(Key::with_value(0), 1);
         assert_is_vec(&key_vec, 3);
@@ -601,7 +674,7 @@ mod tests {
                 }
                 value
             });
-            key_vec.change_keys_size(key_size);
+            key_vec.change_keys_size(key_size, NoKeyMapping);
             key_vec._push(mak_key_for_given_size, 1);
         }
         assert!(key_vec.check_invariants().is_ok());
@@ -611,13 +684,13 @@ mod tests {
     #[should_panic]
     fn cannot_set_key_size_too_big() {
         let mut key_vec = KeyVec::new();
-        key_vec.change_keys_size(Key::MAX_SIZE + 1);
+        key_vec.change_keys_size(Key::MAX_SIZE + 1, NoKeyMapping);
     }
 
     #[test]
     fn can_set_key_size_to_max() {
         let mut key_vec = KeyVec::new();
-        key_vec.change_keys_size(Key::MAX_SIZE);
+        key_vec.change_keys_size(Key::MAX_SIZE, NoKeyMapping);
         assert!(key_vec.check_invariants().is_ok());
     }
 
@@ -626,7 +699,7 @@ mod tests {
         let mut key_vec = KeyVec::new();
         key_vec._push(Key::with_value(0), 1000);
         assert_eq!(key_vec.len(), 1000);
-        key_vec.change_keys_size(1);
+        key_vec.change_keys_size(1, NoKeyMapping);
         key_vec._push(Key::with_value(1), 1000);
         assert_eq!(key_vec.len(), 2000);
         for i in 0..1000 {
@@ -643,7 +716,7 @@ mod tests {
         let mut key_vec = KeyVec::new();
         key_vec._push(Key::with_value(0), 0);
         assert_eq!(key_vec.len(), 0);
-        key_vec.change_keys_size(1);
+        key_vec.change_keys_size(1, NoKeyMapping);
         key_vec._push(Key::with_value(1), 0);
         assert_eq!(key_vec.len(), 0);
         assert_eq!(key_vec.get(0), None);

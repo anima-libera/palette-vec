@@ -115,7 +115,7 @@ pub(crate) struct KeyAllocator<'a> {
     pub(crate) reserved_key: Option<Key>,
 }
 
-impl<'a> PaletteKeyAllocator<Key> for KeyAllocator<'a> {
+impl PaletteKeyAllocator<Key> for KeyAllocator<'_> {
     #[inline]
     fn can_allocate(&self, key: Key) -> bool {
         !(Some(key) == self.reserved_key)

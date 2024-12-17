@@ -88,7 +88,7 @@ pub(crate) mod borrowed_or_owned {
         }
     }
 
-    impl<'a, T: Clone> BorrowedOrOwned<'a, T> {
+    impl<T: Clone> BorrowedOrOwned<'_, T> {
         /// Get an owned even if `Borrowed` by cloning if necessary.
         pub fn cloned(self) -> T {
             match self {
@@ -98,7 +98,7 @@ pub(crate) mod borrowed_or_owned {
         }
     }
 
-    impl<'a, T: Copy> BorrowedOrOwned<'a, T> {
+    impl<T: Copy> BorrowedOrOwned<'_, T> {
         /// Get an owned even if `Borrowed` by copying if necessary.
         pub fn copied(self) -> T {
             match self {
