@@ -455,8 +455,17 @@ impl KeyVec {
                     // When `keys_size != 0` and `keys_size` does not change.
 
                     if KEY_MAPPING_IS_USED {
-                        // TODO: Implement!
-                        unimplemented!("change_keys_size when the non-0");
+                        for index in 0..self.len() {
+                            let bit_range = Self::key_bit_range(self.keys_size, index);
+                            let vec_bits = {
+                                // SAFETY: `keys_size` is non-zero
+                                // so `vec` is the active field.
+                                unsafe { self.vec_or_len.vec.deref_mut() }
+                            };
+                            let old_key = Key::with_value(vec_bits[bit_range.clone()].load());
+                            let new_key = key_mapping(index, old_key);
+                            vec_bits[bit_range].store(new_key.value);
+                        }
                     } else {
                         // Nothing to do.
                     }

@@ -910,60 +910,53 @@ where
 
         let mut index_map_local_access = IndexMapLocalAccessOptimizer::new();
         let mut index_map_access = IndexMapAccessOptimizer::Local(&mut index_map_local_access);
-        for index_in_key_vec in 0..self.key_vec.len() {
-            let old_key = self.key_vec.get(index_in_key_vec).unwrap();
-            if Some(old_key) == old_outlier_key {
-                // The old key was the outlier key.
-                let old_opsk = self
-                    .index_to_opsk_map
-                    .get(index_in_key_vec, &mut index_map_access)
-                    .expect("Bug: Outlier key in key vec but no entry in index map");
-                let key_rewrite = outlier_key_rewrite_table[old_opsk.value];
-                match key_rewrite {
-                    KeyRewrite::NoRewrite => {
-                        if new_outlier_key != old_outlier_key {
-                            self.key_vec.set(index_in_key_vec, new_outlier_key.unwrap());
-                        }
-                    }
-                    KeyRewrite::ToCommonKey(new_key) => {
-                        self.key_vec.set(index_in_key_vec, new_key);
-                        self.index_to_opsk_map
-                            .remove(index_in_key_vec, &mut index_map_access);
-                    }
-                    KeyRewrite::ToOutlierKeyWithOPSK(new_opsk) => {
-                        if new_outlier_key != old_outlier_key {
-                            self.key_vec.set(index_in_key_vec, new_outlier_key.unwrap());
-                        }
-                        self.index_to_opsk_map.set(
-                            index_in_key_vec,
-                            new_opsk,
-                            &mut index_map_access,
-                        );
-                    }
-                    KeyRewrite::Unreachable => unreachable!(),
-                }
-            } else {
-                // The old key was not the outlier key.
-                let key_rewrite = common_key_rewrite_table[old_key.value];
-                match key_rewrite {
-                    KeyRewrite::NoRewrite => {}
-                    KeyRewrite::ToCommonKey(new_key) => {
-                        self.key_vec.set(index_in_key_vec, new_key);
-                    }
-                    KeyRewrite::ToOutlierKeyWithOPSK(new_opsk) => {
-                        self.key_vec.set(index_in_key_vec, new_outlier_key.unwrap());
-                        self.index_to_opsk_map.set(
-                            index_in_key_vec,
-                            new_opsk,
-                            &mut index_map_access,
-                        );
-                    }
-                    KeyRewrite::Unreachable => unreachable!(),
-                }
-            }
-        }
 
-        self.key_vec.change_keys_size(plan.new_keys_size_in_bits);
+        self.key_vec.change_keys_size_and_map_keys(
+            plan.new_keys_size_in_bits,
+            |index_in_key_vec, old_key| {
+                if Some(old_key) == old_outlier_key {
+                    // The old key was the outlier key.
+                    let old_opsk = self
+                        .index_to_opsk_map
+                        .get(index_in_key_vec, &mut index_map_access)
+                        .expect("Bug: Outlier key in key vec but no entry in index map");
+                    let key_rewrite = outlier_key_rewrite_table[old_opsk.value];
+                    match key_rewrite {
+                        KeyRewrite::NoRewrite => new_outlier_key.unwrap(),
+                        KeyRewrite::ToCommonKey(new_key) => {
+                            self.index_to_opsk_map
+                                .remove(index_in_key_vec, &mut index_map_access);
+                            new_key
+                        }
+                        KeyRewrite::ToOutlierKeyWithOPSK(new_opsk) => {
+                            self.index_to_opsk_map.set(
+                                index_in_key_vec,
+                                new_opsk,
+                                &mut index_map_access,
+                            );
+                            new_outlier_key.unwrap()
+                        }
+                        KeyRewrite::Unreachable => unreachable!(),
+                    }
+                } else {
+                    // The old key was not the outlier key.
+                    let key_rewrite = common_key_rewrite_table[old_key.value];
+                    match key_rewrite {
+                        KeyRewrite::NoRewrite => old_key,
+                        KeyRewrite::ToCommonKey(new_key) => new_key,
+                        KeyRewrite::ToOutlierKeyWithOPSK(new_opsk) => {
+                            self.index_to_opsk_map.set(
+                                index_in_key_vec,
+                                new_opsk,
+                                &mut index_map_access,
+                            );
+                            new_outlier_key.unwrap()
+                        }
+                        KeyRewrite::Unreachable => unreachable!(),
+                    }
+                }
+            },
+        );
     }
 
     pub fn perform_memory_opimization(&mut self) {
