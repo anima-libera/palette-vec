@@ -59,6 +59,7 @@ where
     opsk_value: N,
 }
 
+#[derive(Debug)]
 pub enum BrokenInvariantInIndexMap {
     /// The index map is not sorted by `index_in_key_vec`.
     ///

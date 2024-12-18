@@ -44,6 +44,7 @@ For example, it would be nice to allow for multiple threads to each be able to i
 
 ## Tests
 Test everything, stress test everything, with all the types and settings.
+WIP
 
 ## Benchmarks
 Make benchmarks of performance and memory usage of Vec, PalVec and OutPalVec in various stress tests.
@@ -71,9 +72,6 @@ Statically opt-in feature that allows to get "adders" for elements. An adder cor
 ## Reverse hash map but good
 Instead of fast adders, what if:
 Small compile-time sized circular buffer that caches pairs of hash and key for elements?
-
-## KeyVec `change_keys_size` taking an `Option<FnMut(Key) -> Key>`
-We are iterating over all the keys to change their size. If we do this for like an `OutPalVec` memory optimization then we should also change the keys there at the same time instead of iterating twice (think about the cache!).
 
 ## Shrinking
 Add methods to shrink the allocations and use smaller keys to reduce memory usage.

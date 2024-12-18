@@ -20,7 +20,7 @@ use crate::{
 #[derive(Clone)]
 pub struct OutPalVec<T, M = AutoMemoryOptimizationPolicyNever>
 where
-    T: Clone + Eq + Debug,
+    T: Debug + Clone + Eq,
     M: AutoMemoryOptimizationPolicy,
 {
     /// Instances of `outlier_key` are handled by the `index_to_opsk_map` and the `outlier_palette`
@@ -37,6 +37,7 @@ where
     memory_optimization_policy: M,
 }
 
+#[derive(Debug)]
 pub enum BrokenInvariantInOutPalVec<M>
 where
     M: AutoMemoryOptimizationPolicy,
@@ -437,6 +438,11 @@ where
 
     pub fn outlier_palette_len(&self) -> usize {
         self.outlier_palette.len()
+    }
+
+    /// Returns the size in bits of keys in the KeyVec.
+    pub fn keys_size(&self) -> usize {
+        self.key_vec.keys_size()
     }
 
     /// Returns the number of instances of the given element.
@@ -904,7 +910,7 @@ where
 
         // PHASE 3
         //
-        // Now we use the key rewrite tables to rewrite the key vec and the the index map.
+        // Now we use the key rewrite tables to rewrite the key vec and the index map.
 
         self.outlier_key = new_outlier_key;
 
@@ -1071,10 +1077,11 @@ where
         Ok(())
     }
 
-    type BrokenInvariant;
+    type BrokenInvariant: Debug;
 }
 
-pub enum NoBrokenInvariantsToCheckFor {}
+#[derive(Debug)]
+pub struct NoBrokenInvariantsToCheckFor;
 
 /// The `OutPalVec` will never perform memory optimization operations on its own.
 ///
@@ -1082,7 +1089,7 @@ pub enum NoBrokenInvariantsToCheckFor {}
 /// the `OutPalVec` or else it will remain in a state no better than a `PalVec`.
 /// Use this policy when you know what you are doing
 /// and that the times you manually trigger memory optimization are sufficient.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AutoMemoryOptimizationPolicyNever;
 impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyNever {
     fn new() -> Self {
@@ -1101,7 +1108,7 @@ impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyNever {
 /// The `OutPalVec` will perform memory optimization operations every time it gets the chance.
 ///
 /// This is probably bad, [`AutoMemoryOptimizationPolicyEveryNOccasions`] is probably better.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AutoMemoryOptimizationPolicyAlways;
 impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyAlways {
     fn new() -> Self {
@@ -1120,7 +1127,7 @@ impl AutoMemoryOptimizationPolicy for AutoMemoryOptimizationPolicyAlways {
 /// The `OutPalVec` will perform memory optimization operations once every N occasions.
 ///
 /// The value of `N` might be something to be tweaked.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AutoMemoryOptimizationPolicyEveryNOccasions<const N: usize = 100> {
     counter: usize,
 }
@@ -1159,6 +1166,7 @@ impl<const N: usize> AutoMemoryOptimizationPolicy
     type BrokenInvariant = BrokenInvariantInAutoMemoryOptimizationPolicy;
 }
 
+#[derive(Debug)]
 pub enum BrokenInvariantInAutoMemoryOptimizationPolicy {
     /// The counter got past N.
     ///

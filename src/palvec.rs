@@ -80,6 +80,7 @@ where
     _phantom: PhantomData<T>,
 }
 
+#[derive(Debug)]
 pub enum BrokenInvariantInPalVec {
     BrokenKeyVec(BrokenInvariantInKeyVec),
     BrokenPalette(BrokenInvariantInPalette<Key>),
@@ -359,6 +360,11 @@ where
     /// which is the number of *different* elements in the `PalVec`'s array.
     pub fn palette_len(&self) -> usize {
         self.palette.len()
+    }
+
+    /// Returns the size in bits of keys in the KeyVec.
+    pub fn keys_size(&self) -> usize {
+        self.key_vec.keys_size()
     }
 
     /// Returns the number of instances of the given element.

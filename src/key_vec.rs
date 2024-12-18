@@ -38,6 +38,7 @@ union BitVecOrLen {
     len: usize,
 }
 
+#[derive(Debug)]
 pub enum BrokenInvariantInKeyVec {
     /// The KeyVec's `keys_size` is bigger than `Key::MAX_SIZE`.
     ///
@@ -234,7 +235,7 @@ impl KeyVec {
     /// Panics if `index` is out of bounds.
     ///
     /// Panics if `key_min_size(key)` is not `<= self.keys_size()`.
-    pub(crate) fn set(&mut self, index: usize, key: Key) {
+    pub(crate) fn _set(&mut self, index: usize, key: Key) {
         if index < self.len() {
             let key_min_size = key.min_size();
             if key_min_size <= self.keys_size {
@@ -386,9 +387,29 @@ impl KeyVec {
         self.change_keys_size_internal::<false>(new_keys_size, |_index, _old_key| unreachable!());
     }
 
-    /// Same as `change_keys_size`
+    /// Same as [`Self::change_keys_size`]
     /// but also maps all the keys through the given `key_mapping` function
     /// as they are iterated over.
+    ///
+    /// The mapping part can be seen as doing
+    /// ```rust,ignore
+    /// # // We `ignore` this instead of making it working with other hidden lines
+    /// # // because there is currently no way to access `KeyVec` in the code
+    /// # // maybe because the testing compile an other crate that needs this
+    /// # // to be public to be accessed.
+    /// for index in 0..key_vec.len() {
+    ///     let old_key = key_vec.get(index).unwrap();
+    ///     let new_key = key_mapping(index, old_key);
+    ///     key_vec.set(index, new_key);
+    /// }
+    /// ```
+    /// except it also does what [`Self::change_keys_size`] does at the same time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any key (after mapping) does not fit the given `new_keys_size`.
+    ///
+    /// Panics if `new_keys_size` is not `<= Key::MAX_SIZE`.
     pub(crate) fn change_keys_size_and_map_keys(
         &mut self,
         new_keys_size: usize,
@@ -397,7 +418,8 @@ impl KeyVec {
         self.change_keys_size_internal::<true>(new_keys_size, key_mapping);
     }
 
-    /// See [`Self::change_keys_size`] and [`Self::change_keys_size_and_map_keys`].
+    /// See [`Self::change_keys_size`] and [`Self::change_keys_size_and_map_keys`],
+    /// this internal method is wrapped by these two public methods.
     ///
     /// # Panics
     ///

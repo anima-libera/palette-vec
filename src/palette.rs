@@ -23,6 +23,7 @@ pub(crate) struct PaletteEntry<T> {
     element: MaybeUninit<T>,
 }
 
+#[derive(Debug)]
 pub enum BrokenInvariantInPalette<K>
 where
     K: PaletteKeyType,
@@ -353,7 +354,7 @@ where
             })
     }
 
-    pub(crate) fn iter_elements(&self) -> impl Iterator<Item = &T> {
+    pub(crate) fn _iter_elements(&self) -> impl Iterator<Item = &T> {
         self.vec.iter().filter_map(|palette_entry| {
             (0 < palette_entry.count).then_some({
                 // SAFETY: The entry's `count` is non zero so the element is initialized.

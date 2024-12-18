@@ -72,6 +72,7 @@ pub(crate) mod view_to_owned {
 }
 
 pub(crate) mod borrowed_or_owned {
+    #[derive(Debug)]
     pub enum BorrowedOrOwned<'a, T> {
         Borrowed(&'a T),
         Owned(T),
