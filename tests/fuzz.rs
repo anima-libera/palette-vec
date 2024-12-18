@@ -140,22 +140,22 @@ fn try_everything<T>(
 {
     // Get some elements that will be added in many instances.
     let mut some_element_values: Vec<T> = vec![];
-    for _ in 0..5 {
+    for _ in 0..7 {
         some_element_values.push(element_values.next().unwrap());
     }
-    let some_element_values: [T; 5] = some_element_values.try_into().unwrap();
+    let some_element_values: [T; 7] = some_element_values.try_into().unwrap();
 
     // Get more elements that will be added in few instances.
     let mut more_element_values: Vec<T> = vec![];
-    for _ in 0..30 {
+    for _ in 0..57 {
         more_element_values.push(element_values.next().unwrap());
     }
-    let more_element_values: [T; 30] = more_element_values.try_into().unwrap();
+    let more_element_values: [T; 57] = more_element_values.try_into().unwrap();
 
     // Add the elements in many instances and check stuff.
     let mut expected_len = 0;
     #[allow(clippy::needless_range_loop)]
-    for i in 0..5 {
+    for i in 0..some_element_values.len() {
         let element = &some_element_values[i];
         let how_many = (i + 1) * 20000;
         pv.push(element, how_many);
@@ -164,7 +164,7 @@ fn try_everything<T>(
     assert_eq!(pv.len(), expected_len);
     assert_eq!(pv.keys_size(), 3);
     #[allow(clippy::needless_range_loop)]
-    for i in 0..5 {
+    for i in 0..some_element_values.len() {
         let element = &some_element_values[i];
         let how_many = (i + 1) * 20000;
         assert_eq!(pv.number_of_instances(&element), how_many);
@@ -179,41 +179,41 @@ fn try_everything<T>(
 
     // Pepper in more elements in few instances and check stuff.
     #[allow(clippy::needless_range_loop)]
-    for i in 0..15 {
+    for i in 0..16 {
         pv.set(i, &more_element_values[i], access.as_mut());
         pv.push(&more_element_values[i], 1);
     }
-    for i in 0..15 {
-        for j in 0..((i + 1) * 4) {
+    for i in 0..(more_element_values.len() - 16) {
+        for j in 0..((i + 1) * 3) {
             pv.set(
-                15 + i * 100 + j,
-                &more_element_values[i + 15],
+                16 + i * 200 + j,
+                &more_element_values[i + 16],
                 access.as_mut(),
             );
-            pv.push(&more_element_values[i + 15], 1);
+            pv.push(&more_element_values[i + 16], 1);
         }
     }
     #[allow(clippy::needless_range_loop)]
-    for i in 0..15 {
+    for i in 0..16 {
         assert_eq!(*pv.get(i, access.as_mut()).unwrap(), more_element_values[i]);
     }
-    for i in 0..15 {
-        for j in 0..((i + 1) * 4) {
+    for i in 0..(more_element_values.len() - 16) {
+        for j in 0..((i + 1) * 3) {
             assert_eq!(
-                *pv.get(15 + i * 100 + j, access.as_mut()).unwrap(),
-                more_element_values[i + 15]
+                *pv.get(16 + i * 200 + j, access.as_mut()).unwrap(),
+                more_element_values[i + 16]
             );
         }
     }
     #[allow(clippy::needless_range_loop)]
-    for i in 0..15 {
+    for i in 0..16 {
         let element = &more_element_values[i];
         let how_many = 2;
         assert_eq!(pv.number_of_instances(&element), how_many);
     }
-    for i in 0..15 {
-        let element = &more_element_values[i + 15];
-        let how_many = (i + 1) * 4 * 2;
+    for i in 0..(more_element_values.len() - 16) {
+        let element = &more_element_values[i + 16];
+        let how_many = (i + 1) * 3 * 2;
         assert_eq!(pv.number_of_instances(&element), how_many);
     }
     assert_eq!(pv.keys_size(), 6);
